@@ -21,6 +21,7 @@ code2graph-query = { path = "query", version = "=0.0.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rustc-hash = "2"
 thiserror = "2"
 
 [package]
@@ -70,6 +71,7 @@ pascal = ["dep:tree-sitter-pascal", "_extractors"]
 svelte = ["dep:tree-sitter-svelte-ng", "typescript", "_extractors"]
 
 [dependencies]
+rustc-hash = "2"
 thiserror = "2"
 toml = { version = "1", optional = true }
 serde = { version = "1", optional = true, features = ["derive"] }

@@ -31,6 +31,8 @@ toml = "1"
 directories.workspace = true
 zerompk = { version = "=0.6.1", features = ["derive"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
+zstd = "0.13"
+rustc-hash.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
