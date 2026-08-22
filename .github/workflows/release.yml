@@ -53,7 +53,7 @@ jobs:
     outputs:
       artifact: ${{ steps.check.outputs.artifact }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.distribution_ref || inputs.tag }}
       - id: check
@@ -109,10 +109,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: crates.io
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.distribution_ref || inputs.tag }}
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.validate.outputs.source_sha }}
           path: tagged-source
@@ -163,7 +163,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.distribution_ref || inputs.tag }}
       - uses: actions/download-artifact@v8
@@ -225,10 +225,10 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.distribution_ref || inputs.tag }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           registry-url: https://registry.npmjs.org
@@ -285,7 +285,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
       - uses: actions/download-artifact@v8

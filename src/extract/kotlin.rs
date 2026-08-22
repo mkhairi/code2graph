@@ -409,10 +409,8 @@ fn handle_function(
         disambiguator: crate::symbol::MethodDisambiguator::empty(),
     });
     push_symbol(out, ctx, &node, name, kind, vis, descriptors);
-    if is_main {
-        if let Some(s) = out.last_mut() {
-            s.entry_points.push(EntryPoint::Main);
-        }
+    if is_main && let Some(s) = out.last_mut() {
+        s.entry_points.push(EntryPoint::Main);
     }
 }
 
@@ -660,14 +658,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// Member / subscript LHS (`obj.prop = …`, `arr[i] = …`) are not covered in
 /// v1 — only bare `identifier` LHS nodes. Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1011,21 +1008,14 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "lambda_parameters" {
                     for param in child.children(&mut child.walk()) {
-                        if param.kind() == "variable_declaration" {
-                            if let Some(ident) = param
+                        if param.kind() == "variable_declaration"
+                            && let Some(ident) = param
                                 .children(&mut param.walk())
                                 .find(|c| c.kind() == "identifier")
-                            {
-                                let name = node_text(&ident, bytes);
-                                let intro = ident.start_byte();
-                                push_binding(
-                                    out,
-                                    name.to_owned(),
-                                    intro,
-                                    BindingKind::Param,
-                                    scopes,
-                                );
-                            }
+                        {
+                            let name = node_text(&ident, bytes);
+                            let intro = ident.start_byte();
+                            push_binding(out, name.to_owned(), intro, BindingKind::Param, scopes);
                         }
                     }
                 }
@@ -1104,26 +1094,25 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
 /// is intentionally not handled here.
 fn collect_params(params: &Node, bytes: &[u8], scopes: &[Scope], out: &mut Vec<Binding>) {
     for child in params.named_children(&mut params.walk()) {
-        if child.kind() == "parameter" {
-            if let Some(ident) = child
+        if child.kind() == "parameter"
+            && let Some(ident) = child
                 .children(&mut child.walk())
                 .find(|c| c.kind() == "identifier")
-            {
-                let name = node_text(&ident, bytes);
-                let intro = ident.start_byte();
-                let type_name = child
-                    .named_children(&mut child.walk())
-                    .find(|c| c.kind() == "user_type")
-                    .map(|t| simple_type_name(node_text(&t, bytes), ".").to_owned());
-                push_typed_binding(
-                    out,
-                    name.to_owned(),
-                    intro,
-                    BindingKind::Param,
-                    scopes,
-                    type_name,
-                );
-            }
+        {
+            let name = node_text(&ident, bytes);
+            let intro = ident.start_byte();
+            let type_name = child
+                .named_children(&mut child.walk())
+                .find(|c| c.kind() == "user_type")
+                .map(|t| simple_type_name(node_text(&t, bytes), ".").to_owned());
+            push_typed_binding(
+                out,
+                name.to_owned(),
+                intro,
+                BindingKind::Param,
+                scopes,
+                type_name,
+            );
         }
     }
 }
@@ -1190,16 +1179,16 @@ fn collect_inheritance(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Refe
         for child in node.children(&mut node.walk()) {
             if child.kind() == "delegation_specifiers" {
                 for spec in child.children(&mut child.walk()) {
-                    if spec.kind() == "delegation_specifier" {
-                        if let Some(user_type_node) = first_user_type(&spec) {
-                            super::push_ref(
-                                out,
-                                super::simple_type_name(node_text(&user_type_node, bytes), "."),
-                                &user_type_node,
-                                file,
-                                RefRole::IsImplementation,
-                            );
-                        }
+                    if spec.kind() == "delegation_specifier"
+                        && let Some(user_type_node) = first_user_type(&spec)
+                    {
+                        super::push_ref(
+                            out,
+                            super::simple_type_name(node_text(&user_type_node, bytes), "."),
+                            &user_type_node,
+                            file,
+                            RefRole::IsImplementation,
+                        );
                     }
                 }
             }

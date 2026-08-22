@@ -886,14 +886,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// and is excluded. Member / subscript LHS (`obj.field = …`, `arr[i] = …`)
 /// are not covered in v1 — only bare identifiers. Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if matches!(node.kind(), "assignment_expression" | "operator_assignment") {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if matches!(node.kind(), "assignment_expression" | "operator_assignment")
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1147,12 +1146,12 @@ fn collect_params(params: &Node, bytes: &[u8], scopes: &[Scope], out: &mut Vec<B
                 // `int... xs` — the declarator is a `variable_declarator` child;
                 // the name is its `name` field.
                 for grandchild in child.named_children(&mut child.walk()) {
-                    if grandchild.kind() == "variable_declarator" {
-                        if let Some(name_node) = grandchild.child_by_field_name("name") {
-                            let name = node_text(&name_node, bytes);
-                            let intro = name_node.start_byte();
-                            push_binding(out, name.to_owned(), intro, BindingKind::Param, scopes);
-                        }
+                    if grandchild.kind() == "variable_declarator"
+                        && let Some(name_node) = grandchild.child_by_field_name("name")
+                    {
+                        let name = node_text(&name_node, bytes);
+                        let intro = name_node.start_byte();
+                        push_binding(out, name.to_owned(), intro, BindingKind::Param, scopes);
                     }
                 }
             }

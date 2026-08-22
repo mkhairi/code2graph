@@ -251,10 +251,10 @@ fn leaf_type_name(node: Node, bytes: &[u8]) -> Option<String> {
             // Descend into the first named child.
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.is_named() {
-                    if let Some(name) = leaf_type_name(child, bytes) {
-                        return Some(name);
-                    }
+                if child.is_named()
+                    && let Some(name) = leaf_type_name(child, bytes)
+                {
+                    return Some(name);
                 }
             }
             None
@@ -272,16 +272,16 @@ fn collect_inheritance(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Refe
         "class_declaration" | "protocol_declaration" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "inheritance_specifier" {
-                    if let Some(inherits_from) = child.child_by_field_name("inherits_from") {
-                        super::push_ref(
-                            out,
-                            super::simple_type_name(node_text(&inherits_from, bytes), "."),
-                            &inherits_from,
-                            file,
-                            RefRole::IsImplementation,
-                        );
-                    }
+                if child.kind() == "inheritance_specifier"
+                    && let Some(inherits_from) = child.child_by_field_name("inherits_from")
+                {
+                    super::push_ref(
+                        out,
+                        super::simple_type_name(node_text(&inherits_from, bytes), "."),
+                        &inherits_from,
+                        file,
+                        RefRole::IsImplementation,
+                    );
                 }
             }
         }
@@ -556,10 +556,8 @@ fn handle_function(
         disambiguator: crate::symbol::MethodDisambiguator::empty(),
     });
     push_symbol(out, ctx, &node, name, kind, visibility, descriptors);
-    if is_main {
-        if let Some(s) = out.last_mut() {
-            s.entry_points.push(EntryPoint::Main);
-        }
+    if is_main && let Some(s) = out.last_mut() {
+        s.entry_points.push(EntryPoint::Main);
     }
 }
 
@@ -777,10 +775,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
         // child (not a named field) carrying the declared type in its `type:` field.
         "property_declaration" | "protocol_property_declaration" => {
             for child in node.children(&mut node.walk()) {
-                if child.kind() == "type_annotation" {
-                    if let Some(type_node) = child.child_by_field_name("type") {
-                        type_leaf_swift(&type_node, bytes, file, TypeRefContext::Field, out);
-                    }
+                if child.kind() == "type_annotation"
+                    && let Some(type_node) = child.child_by_field_name("type")
+                {
+                    type_leaf_swift(&type_node, bytes, file, TypeRefContext::Field, out);
                 }
             }
             // Fall through to recurse into children.
@@ -909,12 +907,12 @@ fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec
         if let Some(target) = node.child_by_field_name("target") {
             // target.kind() == "directly_assignable_expression"
             // Its first (and only) named child is the actual expression.
-            if let Some(lhs) = target.named_child(0) {
-                if lhs.kind() == "simple_identifier" {
-                    let name = node_text(&lhs, bytes);
-                    if name.len() >= MIN_REF_LEN {
-                        push_ref(out, name, &lhs, file, RefRole::Write);
-                    }
+            if let Some(lhs) = target.named_child(0)
+                && lhs.kind() == "simple_identifier"
+            {
+                let name = node_text(&lhs, bytes);
+                if name.len() >= MIN_REF_LEN {
+                    push_ref(out, name, &lhs, file, RefRole::Write);
                 }
             }
         }
@@ -1085,18 +1083,18 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
                             if param.kind() == "lambda_parameter" {
                                 // `name` field on lambda_parameter: use first
                                 // simple_identifier child of the name field.
-                                if let Some(name_node) = param.child_by_field_name("name") {
-                                    if name_node.kind() == "simple_identifier" {
-                                        let name = node_text(&name_node, bytes);
-                                        let intro = name_node.start_byte();
-                                        push_binding(
-                                            out,
-                                            name.to_owned(),
-                                            intro,
-                                            BindingKind::Param,
-                                            scopes,
-                                        );
-                                    }
+                                if let Some(name_node) = param.child_by_field_name("name")
+                                    && name_node.kind() == "simple_identifier"
+                                {
+                                    let name = node_text(&name_node, bytes);
+                                    let intro = name_node.start_byte();
+                                    push_binding(
+                                        out,
+                                        name.to_owned(),
+                                        intro,
+                                        BindingKind::Param,
+                                        scopes,
+                                    );
                                 }
                             }
                         }
@@ -1190,22 +1188,22 @@ fn collect_params_dfs(
     }
     if node.kind() == "parameter" {
         // `name` field is the INTERNAL name (simple_identifier).
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if name_node.kind() == "simple_identifier" {
-                let name = node_text(&name_node, bytes);
-                let intro = name_node.start_byte();
-                let type_name = node
-                    .child_by_field_name("type")
-                    .map(|t| simple_type_name(node_text(&t, bytes), ".").to_owned());
-                push_typed_binding(
-                    out,
-                    name.to_owned(),
-                    intro,
-                    BindingKind::Param,
-                    scopes,
-                    type_name,
-                );
-            }
+        if let Some(name_node) = node.child_by_field_name("name")
+            && name_node.kind() == "simple_identifier"
+        {
+            let name = node_text(&name_node, bytes);
+            let intro = name_node.start_byte();
+            let type_name = node
+                .child_by_field_name("type")
+                .map(|t| simple_type_name(node_text(&t, bytes), ".").to_owned());
+            push_typed_binding(
+                out,
+                name.to_owned(),
+                intro,
+                BindingKind::Param,
+                scopes,
+                type_name,
+            );
         }
         // No need to recurse into a parameter node's children.
         return;

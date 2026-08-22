@@ -180,12 +180,12 @@ fn collect_symbols(
 /// Applies [`MIN_REF_LEN`].
 fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
     if node.kind() == "variable_name" {
-        if let Some(parent) = node.parent() {
-            if matches!(parent.kind(), "simple_expansion" | "expansion") {
-                let name = node_text(node, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, node, file, RefRole::Read);
-                }
+        if let Some(parent) = node.parent()
+            && matches!(parent.kind(), "simple_expansion" | "expansion")
+        {
+            let name = node_text(node, bytes);
+            if name.len() >= MIN_REF_LEN {
+                push_ref(out, name, node, file, RefRole::Read);
             }
         }
         // variable_name has no meaningful children for reads; return early.
@@ -207,14 +207,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 ///
 /// Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "variable_assignment" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if name_node.kind() == "variable_name" {
-                let name = node_text(&name_node, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &name_node, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "variable_assignment"
+        && let Some(name_node) = node.child_by_field_name("name")
+        && name_node.kind() == "variable_name"
+    {
+        let name = node_text(&name_node, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &name_node, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -302,22 +301,16 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
         "declaration_command" => {
             // Children include variable_assignment nodes (no named field — walk all).
             for child in node.children(&mut node.walk()) {
-                if child.kind() == "variable_assignment" {
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        // Skip subscript/array forms (e.g. `local arr[0]=val`).
-                        if name_node.kind() == "variable_name" {
-                            let name = node_text(&name_node, bytes);
-                            let intro = name_node.start_byte();
-                            let sid = innermost_scope(intro, scopes).unwrap_or(0);
-                            if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                                push_binding(
-                                    out,
-                                    name.to_owned(),
-                                    intro,
-                                    BindingKind::Local,
-                                    scopes,
-                                );
-                            }
+                if child.kind() == "variable_assignment"
+                    && let Some(name_node) = child.child_by_field_name("name")
+                {
+                    // Skip subscript/array forms (e.g. `local arr[0]=val`).
+                    if name_node.kind() == "variable_name" {
+                        let name = node_text(&name_node, bytes);
+                        let intro = name_node.start_byte();
+                        let sid = innermost_scope(intro, scopes).unwrap_or(0);
+                        if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
+                            push_binding(out, name.to_owned(), intro, BindingKind::Local, scopes);
                         }
                     }
                 }

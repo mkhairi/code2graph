@@ -29,12 +29,12 @@ pub(crate) fn code_graph(value: &Bound<'_, PyAny>) -> PyResult<CodeGraph> {
     for (collection, field) in [("symbols", "id"), ("edges", "from"), ("edges", "to")] {
         if let Some(items) = value.get(collection).and_then(serde_json::Value::as_array) {
             for item in items {
-                if let Some(id) = item.get(field) {
-                    if !id.is_object() {
-                        return Err(PyValueError::new_err(format!(
-                            "graph {collection}.{field} must be a lossless SymbolId serde dict, not a SCIP string"
-                        )));
-                    }
+                if let Some(id) = item.get(field)
+                    && !id.is_object()
+                {
+                    return Err(PyValueError::new_err(format!(
+                        "graph {collection}.{field} must be a lossless SymbolId serde dict, not a SCIP string"
+                    )));
                 }
             }
         }

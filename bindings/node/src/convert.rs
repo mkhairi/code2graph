@@ -28,12 +28,12 @@ pub(crate) fn code_graph(value: Value) -> napi::Result<CodeGraph> {
     for (collection, field) in [("symbols", "id"), ("edges", "from"), ("edges", "to")] {
         if let Some(items) = value.get(collection).and_then(Value::as_array) {
             for item in items {
-                if let Some(id) = item.get(field) {
-                    if !id.is_object() {
-                        return Err(napi::Error::from_reason(format!(
-                            "graph {collection}.{field} must be a lossless SymbolId serde object, not a SCIP string"
-                        )));
-                    }
+                if let Some(id) = item.get(field)
+                    && !id.is_object()
+                {
+                    return Err(napi::Error::from_reason(format!(
+                        "graph {collection}.{field} must be a lossless SymbolId serde object, not a SCIP string"
+                    )));
                 }
             }
         }

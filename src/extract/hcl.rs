@@ -336,59 +336,59 @@ fn collect_references_recursive(node: &Node, bytes: &[u8], file: &str, out: &mut
         };
 
         // Does this expression open with a variable_expr?
-        if let Some(first) = named.first() {
-            if first.kind() == "variable_expr" {
-                // Locate the first get_attr sibling.
-                let first_get_attr = named.iter().find(|n| n.kind() == "get_attr");
-                if let Some(get_attr) = first_get_attr {
-                    // seg0: identifier inside variable_expr
-                    if let Some(seg0_node) = first
-                        .named_children(&mut first.walk())
+        if let Some(first) = named.first()
+            && first.kind() == "variable_expr"
+        {
+            // Locate the first get_attr sibling.
+            let first_get_attr = named.iter().find(|n| n.kind() == "get_attr");
+            if let Some(get_attr) = first_get_attr {
+                // seg0: identifier inside variable_expr
+                if let Some(seg0_node) = first
+                    .named_children(&mut first.walk())
+                    .find(|n| n.kind() == "identifier")
+                {
+                    // seg1: identifier inside the first get_attr
+                    if let Some(seg1_node) = get_attr
+                        .named_children(&mut get_attr.walk())
                         .find(|n| n.kind() == "identifier")
                     {
-                        // seg1: identifier inside the first get_attr
-                        if let Some(seg1_node) = get_attr
-                            .named_children(&mut get_attr.walk())
-                            .find(|n| n.kind() == "identifier")
-                        {
-                            let seg0 = super::node_text(&seg0_node, bytes);
-                            let seg1 = super::node_text(&seg1_node, bytes);
+                        let seg0 = super::node_text(&seg0_node, bytes);
+                        let seg1 = super::node_text(&seg1_node, bytes);
 
-                            // Both segments must be non-empty; we do NOT apply
-                            // MIN_REF_LEN here — Terraform names like "vpc" or
-                            // "web" are exactly 3 chars; "id" (2 chars) only
-                            // appears as seg2+, never as seg1 in a real
-                            // resource traversal.  Skip only truly empty text
-                            // (parse error fallback).
-                            if !seg0.is_empty() && !seg1.is_empty() {
-                                out.push(Reference {
-                                    name: seg1.to_owned(),
-                                    qualifier: Some(seg0.to_owned()),
-                                    role: RefRole::TypeRef,
-                                    occ: super::node_occurrence(first, file),
-                                    source_module: None,
-                                    from_path: None,
-                                    is_reexport: false,
-                                    imported_name: None,
-                                    scope: None,
-                                    type_ref_ctx: None,
-                                    cross_artifact: false,
-                                    self_receiver: false,
-                                });
-                            }
+                        // Both segments must be non-empty; we do NOT apply
+                        // MIN_REF_LEN here — Terraform names like "vpc" or
+                        // "web" are exactly 3 chars; "id" (2 chars) only
+                        // appears as seg2+, never as seg1 in a real
+                        // resource traversal.  Skip only truly empty text
+                        // (parse error fallback).
+                        if !seg0.is_empty() && !seg1.is_empty() {
+                            out.push(Reference {
+                                name: seg1.to_owned(),
+                                qualifier: Some(seg0.to_owned()),
+                                role: RefRole::TypeRef,
+                                occ: super::node_occurrence(first, file),
+                                source_module: None,
+                                from_path: None,
+                                is_reexport: false,
+                                imported_name: None,
+                                scope: None,
+                                type_ref_ctx: None,
+                                cross_artifact: false,
+                                self_receiver: false,
+                            });
                         }
                     }
-
-                    // This expression is a traversal root — do not recurse
-                    // into its named children (they are the variable_expr and
-                    // get_attr nodes we just processed).  But we must still
-                    // recurse into non-traversal child sub-trees (e.g. nested
-                    // expressions inside function call arguments).  Since the
-                    // children of a traversal expression are all either
-                    // `variable_expr`, `get_attr`, or `index` nodes (not
-                    // further `expression` nodes), it is safe to return here.
-                    return;
                 }
+
+                // This expression is a traversal root — do not recurse
+                // into its named children (they are the variable_expr and
+                // get_attr nodes we just processed).  But we must still
+                // recurse into non-traversal child sub-trees (e.g. nested
+                // expressions inside function call arguments).  Since the
+                // children of a traversal expression are all either
+                // `variable_expr`, `get_attr`, or `index` nodes (not
+                // further `expression` nodes), it is safe to return here.
+                return;
             }
         }
     }

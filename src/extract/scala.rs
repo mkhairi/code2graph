@@ -377,10 +377,8 @@ fn emit_function(node: &Node, ctx: &ExtractCtx, prefix: &[Descriptor], out: &mut
         descriptors,
         one_line_signature(node_text(node, ctx.bytes), &['{', ';', '=']),
     ));
-    if is_main {
-        if let Some(s) = out.last_mut() {
-            s.entry_points.push(EntryPoint::Main);
-        }
+    if is_main && let Some(s) = out.last_mut() {
+        s.entry_points.push(EntryPoint::Main);
     }
 }
 
@@ -619,21 +617,21 @@ fn collect_import_node(
                 }
                 "import_selector" => {
                     // rename or specific selector
-                    if let Some(first) = sel_child.named_children(&mut sel_child.walk()).next() {
-                        if first.kind() == "identifier" {
-                            let name = node_text(&first, bytes);
-                            if name == "_" || name == "*" {
-                                continue;
-                            }
-                            // Check if it's a rename (has `=>` child).
-                            let has_rename = sel_child
-                                .children(&mut sel_child.walk())
-                                .any(|c| c.kind() == "=>");
-                            if has_rename {
-                                continue; // skip renames
-                            }
-                            push_import_ref(out, name, &first, file, module_id, &from_path);
+                    if let Some(first) = sel_child.named_children(&mut sel_child.walk()).next()
+                        && first.kind() == "identifier"
+                    {
+                        let name = node_text(&first, bytes);
+                        if name == "_" || name == "*" {
+                            continue;
                         }
+                        // Check if it's a rename (has `=>` child).
+                        let has_rename = sel_child
+                            .children(&mut sel_child.walk())
+                            .any(|c| c.kind() == "=>");
+                        if has_rename {
+                            continue; // skip renames
+                        }
+                        push_import_ref(out, name, &first, file, module_id, &from_path);
                     }
                 }
                 _ => {}
@@ -742,14 +740,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 ///
 /// Member/index LHS (`obj.field = …`) is not covered in v1. Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment_expression" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment_expression"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -885,21 +882,21 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
         }
         "val_definition" | "var_definition" => {
             // Local val/var inside a block scope.
-            if let Some(pat) = node.child_by_field_name("pattern") {
-                if pat.kind() == "identifier" {
-                    let name = node_text(&pat, bytes);
-                    let intro = pat.start_byte();
-                    if name.len() >= MIN_REF_LEN && innermost_scope(intro, scopes) != Some(0) {
-                        let type_name = val_definition_type_name(node, bytes);
-                        push_typed_binding(
-                            out,
-                            name.to_owned(),
-                            intro,
-                            BindingKind::Local,
-                            scopes,
-                            type_name,
-                        );
-                    }
+            if let Some(pat) = node.child_by_field_name("pattern")
+                && pat.kind() == "identifier"
+            {
+                let name = node_text(&pat, bytes);
+                let intro = pat.start_byte();
+                if name.len() >= MIN_REF_LEN && innermost_scope(intro, scopes) != Some(0) {
+                    let type_name = val_definition_type_name(node, bytes);
+                    push_typed_binding(
+                        out,
+                        name.to_owned(),
+                        intro,
+                        BindingKind::Local,
+                        scopes,
+                        type_name,
+                    );
                 }
             }
         }

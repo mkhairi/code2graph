@@ -353,10 +353,10 @@ fn emit_local_symbol(
     ));
 
     // If it's a table constructor, descend into its fields.
-    if let Some(val) = value_opt {
-        if val.kind() == "table_constructor" {
-            collect_table_fields(val, &descriptors, ctx, out);
-        }
+    if let Some(val) = value_opt
+        && val.kind() == "table_constructor"
+    {
+        collect_table_fields(val, &descriptors, ctx, out);
     }
 }
 
@@ -452,25 +452,24 @@ fn collect_require_imports(
     out: &mut Vec<Reference>,
     module_id: &str,
 ) {
-    if node.kind() == "function_call" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if name_node.kind() == "identifier" && node_text(&name_node, bytes) == "require" {
-                if let Some(args) = node.child_by_field_name("arguments") {
-                    // Case 1: string literal require('pkg.sub')
-                    if let Some(from_path) = extract_string_arg(&args, bytes) {
-                        let leaf = from_path.rsplit('.').next().unwrap_or(&from_path);
-                        if leaf.len() >= MIN_REF_LEN {
-                            push_import_ref(out, leaf, &name_node, file, module_id, &from_path);
-                        }
-                    }
-                    // Case 2: dot-expression require(script.Parent.Mod) — Roblox/Luau style.
-                    else if let Some(from_path) = extract_dot_expr_arg(&args, bytes) {
-                        let leaf = from_path.rsplit('.').next().unwrap_or(&from_path);
-                        if leaf.len() >= MIN_REF_LEN {
-                            push_import_ref(out, leaf, &name_node, file, module_id, &from_path);
-                        }
-                    }
-                }
+    if node.kind() == "function_call"
+        && let Some(name_node) = node.child_by_field_name("name")
+        && name_node.kind() == "identifier"
+        && node_text(&name_node, bytes) == "require"
+        && let Some(args) = node.child_by_field_name("arguments")
+    {
+        // Case 1: string literal require('pkg.sub')
+        if let Some(from_path) = extract_string_arg(&args, bytes) {
+            let leaf = from_path.rsplit('.').next().unwrap_or(&from_path);
+            if leaf.len() >= MIN_REF_LEN {
+                push_import_ref(out, leaf, &name_node, file, module_id, &from_path);
+            }
+        }
+        // Case 2: dot-expression require(script.Parent.Mod) — Roblox/Luau style.
+        else if let Some(from_path) = extract_dot_expr_arg(&args, bytes) {
+            let leaf = from_path.rsplit('.').next().unwrap_or(&from_path);
+            if leaf.len() >= MIN_REF_LEN {
+                push_import_ref(out, leaf, &name_node, file, module_id, &from_path);
             }
         }
     }
@@ -587,17 +586,15 @@ fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec
             node.parent().map(|p| p.kind()),
             Some("variable_declaration") | Some("local_declaration")
         )
-    {
-        if let Some(vl) = node
+        && let Some(vl) = node
             .children(&mut node.walk())
             .find(|c| c.kind() == "variable_list")
-        {
-            for target in vl.children(&mut vl.walk()) {
-                if target.kind() == "identifier" {
-                    let name = node_text(&target, bytes);
-                    if name.len() >= MIN_REF_LEN {
-                        push_ref(out, name, &target, file, RefRole::Write);
-                    }
+    {
+        for target in vl.children(&mut vl.walk()) {
+            if target.kind() == "identifier" {
+                let name = node_text(&target, bytes);
+                if name.len() >= MIN_REF_LEN {
+                    push_ref(out, name, &target, file, RefRole::Write);
                 }
             }
         }

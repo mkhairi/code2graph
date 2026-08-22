@@ -550,14 +550,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// in v1 — only bare `variable_name` nodes. Applies [`MIN_REF_LEN`] to the
 /// bare name (without `$`).
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment_expression" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "variable_name" {
-                let name = var_bare_name(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, &name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment_expression"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "variable_name"
+    {
+        let name = var_bare_name(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, &name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -808,18 +807,17 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
             }
         }
         "assignment_expression" => {
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "variable_name" {
-                    let name = child_text(&left, "name", bytes).unwrap_or_else(|| {
-                        node_text(&left, bytes).trim_start_matches('$').to_owned()
-                    });
-                    if !name.is_empty() {
-                        let intro = left.start_byte();
-                        if let Some(sid) = innermost_scope(intro, scopes) {
-                            if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                                push_binding(out, name, intro, BindingKind::Local, scopes);
-                            }
-                        }
+            if let Some(left) = node.child_by_field_name("left")
+                && left.kind() == "variable_name"
+            {
+                let name = child_text(&left, "name", bytes)
+                    .unwrap_or_else(|| node_text(&left, bytes).trim_start_matches('$').to_owned());
+                if !name.is_empty() {
+                    let intro = left.start_byte();
+                    if let Some(sid) = innermost_scope(intro, scopes)
+                        && matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block)
+                    {
+                        push_binding(out, name, intro, BindingKind::Local, scopes);
                     }
                 }
             }
@@ -836,10 +834,10 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
             let mut first_seen = false;
             for child in node.named_children(&mut node.walk()) {
                 // Skip the body node.
-                if let Some(ref b) = body {
-                    if child == *b {
-                        continue;
-                    }
+                if let Some(ref b) = body
+                    && child == *b
+                {
+                    continue;
                 }
                 // Skip the first named child (the iterable expression).
                 if !first_seen {
@@ -873,10 +871,10 @@ fn collect_foreach_var(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut Ve
             .unwrap_or_else(|| node_text(node, bytes).trim_start_matches('$').to_owned());
         if !name.is_empty() {
             let intro = node.start_byte();
-            if let Some(sid) = innermost_scope(intro, scopes) {
-                if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                    push_binding(out, name, intro, BindingKind::Local, scopes);
-                }
+            if let Some(sid) = innermost_scope(intro, scopes)
+                && matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block)
+            {
+                push_binding(out, name, intro, BindingKind::Local, scopes);
             }
         }
         return;

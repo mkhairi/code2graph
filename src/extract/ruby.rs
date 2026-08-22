@@ -206,13 +206,13 @@ fn walk(node: &Node, prefix: &[Descriptor], ctx: &ExtractCtx, out: &mut Vec<Symb
             }
             "assignment" => {
                 // Constant assignment: the left-hand side is a `constant` node.
-                if let Some(left) = child.child_by_field_name("left") {
-                    if left.kind() == "constant" {
-                        let name = node_text(&left, ctx.bytes).to_owned();
-                        let mut descriptors = prefix.to_vec();
-                        descriptors.push(Descriptor::Term(name.clone()));
-                        push_symbol(out, ctx, &child, name, SymbolKind::Const, descriptors);
-                    }
+                if let Some(left) = child.child_by_field_name("left")
+                    && left.kind() == "constant"
+                {
+                    let name = node_text(&left, ctx.bytes).to_owned();
+                    let mut descriptors = prefix.to_vec();
+                    descriptors.push(Descriptor::Term(name.clone()));
+                    push_symbol(out, ctx, &child, name, SymbolKind::Const, descriptors);
                 }
             }
             _ => {}
@@ -248,22 +248,22 @@ fn push_symbol(
 ///
 /// `module` nodes are skipped — Ruby modules have no superclass.
 fn collect_inheritance(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "class" {
-        if let Some(superclass_node) = node.child_by_field_name("superclass") {
-            // The `superclass` node's first named child is the parent type
-            // expression (`constant` or `scope_resolution`).
-            if let Some(type_node) = superclass_node
-                .children(&mut superclass_node.walk())
-                .find(|c| c.is_named())
-            {
-                super::push_ref(
-                    out,
-                    super::simple_type_name(node_text(&type_node, bytes), "::"),
-                    &type_node,
-                    file,
-                    RefRole::IsImplementation,
-                );
-            }
+    if node.kind() == "class"
+        && let Some(superclass_node) = node.child_by_field_name("superclass")
+    {
+        // The `superclass` node's first named child is the parent type
+        // expression (`constant` or `scope_resolution`).
+        if let Some(type_node) = superclass_node
+            .children(&mut superclass_node.walk())
+            .find(|c| c.is_named())
+        {
+            super::push_ref(
+                out,
+                super::simple_type_name(node_text(&type_node, bytes), "::"),
+                &type_node,
+                file,
+                RefRole::IsImplementation,
+            );
         }
     }
 
@@ -354,14 +354,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// and element-reference LHS (`arr[i] = …` — `element_reference`). Applies
 /// [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -522,15 +521,15 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
             }
         }
         "assignment" => {
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
-                    let name = node_text(&left, bytes).to_owned();
-                    let intro = left.start_byte();
-                    if let Some(sid) = innermost_scope(intro, scopes) {
-                        if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                            push_binding(out, name, intro, BindingKind::Local, scopes);
-                        }
-                    }
+            if let Some(left) = node.child_by_field_name("left")
+                && left.kind() == "identifier"
+            {
+                let name = node_text(&left, bytes).to_owned();
+                let intro = left.start_byte();
+                if let Some(sid) = innermost_scope(intro, scopes)
+                    && matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block)
+                {
+                    push_binding(out, name, intro, BindingKind::Local, scopes);
                 }
             }
             for child in node.children(&mut node.walk()) {

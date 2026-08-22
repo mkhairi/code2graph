@@ -229,7 +229,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(required, text)
         pypi = release["jobs"]["publish-pypi"]
         self.assertEqual(pypi["permissions"]["id-token"], "write")
-        pypi_publish = next(step for step in pypi["steps"] if step.get("uses") == "pypa/gh-action-pypi-publish@release/v1")
+        pypi_publish = next(step for step in pypi["steps"] if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@"))
         self.assertEqual(pypi_publish["with"]["skip-existing"], "true")
         self.assertIn("for attempt in {1..90}", text)
         self.assertIn("Cache-Control: no-cache", text)
@@ -237,7 +237,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("sleep 5", text)
         npm = release["jobs"]["publish-npm"]
         self.assertEqual(npm["permissions"]["id-token"], "write")
-        node_setup = next(step for step in npm["steps"] if step.get("uses") == "actions/setup-node@v5")
+        node_setup = next(step for step in npm["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@"))
         self.assertEqual(node_setup["with"]["registry-url"], "https://registry.npmjs.org")
         publish_step = next(step for step in npm["steps"] if step.get("name") == "Publish prepared platform packages before the root package")
         self.assertEqual(publish_step["env"]["NODE_AUTH_TOKEN"], "${{ secrets.NPM_TOKEN }}")
@@ -247,9 +247,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(github["if"], "inputs.github && needs.validate.outputs.is_prerelease != 'true'")
         self.assertEqual(github["permissions"]["contents"], "write")
         self.assertNotIn("environment", github)
-        self.assertEqual(github["steps"][0]["uses"], "actions/checkout@v6")
+        self.assertTrue(str(github["steps"][0]["uses"]).startswith("actions/checkout@"))
         self.assertEqual(github["steps"][0]["with"]["ref"], "${{ inputs.tag }}")
-        release_step = next(step for step in github["steps"] if step.get("uses") == "softprops/action-gh-release@v3")
+        release_step = next(step for step in github["steps"] if str(step.get("uses", "")).startswith("softprops/action-gh-release@"))
         self.assertEqual(release_step["with"]["tag_name"], "${{ inputs.tag }}")
         self.assertEqual(release_step["with"]["target_commitish"], "${{ needs.validate.outputs.source_sha }}")
         self.assertEqual(release_step["with"]["files"], "bundle/**")
@@ -263,14 +263,24 @@ class WorkflowContractTests(unittest.TestCase):
         for forbidden in ("maturin build", "maturin-action", "napi build", "cargo test", "npm test", "cargo build"):
             self.assertNotIn(forbidden, text)
 
-    def test_action_versions_and_actionlint_invocation_match_repository(self):
-        test_text = (ROOT / ".github/workflows/test.yml").read_text()
-        self.assertIn("docker://rhysd/actionlint:1.7.7", test_text)
+    def test_every_action_is_pinned_once_across_workflows(self):
+        # Pinning the same action at two versions is how a workflow silently
+        # stops matching the gate it mirrors. Assert consistency instead of a
+        # literal version, so a routine upgrade needs no edit here.
+        refs: dict[str, set[str]] = {}
         for workflow_path in (ROOT / ".github/workflows").glob("*.yml"):
-            text = workflow_path.read_text()
-            self.assertNotIn("actions/checkout@v5", text)
-            self.assertNotIn("actions/upload-artifact@v6", text)
-            self.assertNotIn("actions/download-artifact@v7", text)
-
+            workflow = yaml.safe_load(workflow_path.read_text())
+            for job in workflow.get("jobs", {}).values():
+                for step in job.get("steps", []) or []:
+                    uses = step.get("uses")
+                    if not uses or uses.startswith("./"):
+                        continue
+                    image = uses.removeprefix("docker://")
+                    action, _, ref = image.rpartition("@" if "@" in image else ":")
+                    self.assertTrue(ref, f"{uses} is unpinned")
+                    self.assertNotIn(ref, ("latest", "main", "master"), f"{uses} tracks a moving ref")
+                    refs.setdefault(action, set()).add(ref)
+        for action, pinned in refs.items():
+            self.assertEqual(len(pinned), 1, f"{action} is pinned at {sorted(pinned)}")
 
 if __name__ == "__main__": unittest.main()

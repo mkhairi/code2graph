@@ -827,29 +827,29 @@ fn emit_module_path_refs(
 /// Everything else (`subscript` for `Generic[T]`, `call`, `keyword_argument`
 /// for `metaclass=`) is skipped gracefully.
 fn collect_inheritance(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "class_definition" {
-        if let Some(superclasses) = node.child_by_field_name("superclasses") {
-            for child in superclasses.children(&mut superclasses.walk()) {
-                if !child.is_named() {
-                    continue;
+    if node.kind() == "class_definition"
+        && let Some(superclasses) = node.child_by_field_name("superclasses")
+    {
+        for child in superclasses.children(&mut superclasses.walk()) {
+            if !child.is_named() {
+                continue;
+            }
+            match child.kind() {
+                "identifier" => {
+                    super::push_ref(
+                        out,
+                        node_text(&child, bytes),
+                        &child,
+                        file,
+                        RefRole::IsImplementation,
+                    );
                 }
-                match child.kind() {
-                    "identifier" => {
-                        super::push_ref(
-                            out,
-                            node_text(&child, bytes),
-                            &child,
-                            file,
-                            RefRole::IsImplementation,
-                        );
+                "attribute" => {
+                    if let Some(name) = field_text(&child, "attribute", bytes) {
+                        super::push_ref(out, &name, &child, file, RefRole::IsImplementation);
                     }
-                    "attribute" => {
-                        if let Some(name) = field_text(&child, "attribute", bytes) {
-                            super::push_ref(out, &name, &child, file, RefRole::IsImplementation);
-                        }
-                    }
-                    _ => {} // subscript (Generic[T]), call, keyword_argument, etc.
                 }
+                _ => {} // subscript (Generic[T]), call, keyword_argument, etc.
             }
         }
     }
@@ -895,10 +895,10 @@ fn emit_type_node(
         }
         "generic_type" => {
             // First named child is the base identifier.
-            if let Some(head) = node.named_children(&mut node.walk()).next() {
-                if head.kind() == "identifier" {
-                    push_type_ref(out, node_text(&head, bytes), &head, file, ctx);
-                }
+            if let Some(head) = node.named_children(&mut node.walk()).next()
+                && head.kind() == "identifier"
+            {
+                push_type_ref(out, node_text(&head, bytes), &head, file, ctx);
             }
             // Second named child is `type_parameter` (`[...]`); its named
             // children are `type` expressions → recurse as GenericArg.
@@ -1051,14 +1051,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// Attribute/subscript LHS (`obj.attr = …`, `arr[i] = …`) are not covered in
 /// v1. Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1086,33 +1085,33 @@ fn collect_query_bindings(
     rules: &BindingRules,
     out: &mut Vec<Reference>,
 ) {
-    if node.kind() == "call" {
-        if let Some(func) = node.child_by_field_name("function") {
-            let attr_name;
-            let callee_name: Option<&str> = match func.kind() {
-                "identifier" => Some(node_text(&func, bytes)),
-                "attribute" => {
-                    attr_name = field_text(&func, "attribute", bytes);
-                    attr_name.as_deref()
+    if node.kind() == "call"
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        let attr_name;
+        let callee_name: Option<&str> = match func.kind() {
+            "identifier" => Some(node_text(&func, bytes)),
+            "attribute" => {
+                attr_name = field_text(&func, "attribute", bytes);
+                attr_name.as_deref()
+            }
+            _ => None,
+        };
+        if let Some(callee_name) = callee_name {
+            for rule in rules.for_language(Language::Python) {
+                if rule.construct != callee_name {
+                    continue;
                 }
-                _ => None,
-            };
-            if let Some(callee_name) = callee_name {
-                for rule in rules.for_language(Language::Python) {
-                    if rule.construct != callee_name {
-                        continue;
-                    }
-                    let Some(arguments) = node.child_by_field_name("arguments") else {
-                        continue;
-                    };
-                    let Some(arg) = arguments
-                        .named_children(&mut arguments.walk())
-                        .nth(rule.sql_arg)
-                    else {
-                        continue;
-                    };
-                    emit_embedded_sql_refs(&arg, "string_content", bytes, file, out);
-                }
+                let Some(arguments) = node.child_by_field_name("arguments") else {
+                    continue;
+                };
+                let Some(arg) = arguments
+                    .named_children(&mut arguments.walk())
+                    .nth(rule.sql_arg)
+                else {
+                    continue;
+                };
+                emit_embedded_sql_refs(&arg, "string_content", bytes, file, out);
             }
         }
     }
@@ -1199,20 +1198,20 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
         }
         "assignment" => {
             // Only a bare `name = …` target binds a local in this unit.
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
-                    let intro = left.start_byte();
-                    let name = node_text(&left, bytes).to_owned();
-                    // An explicit annotation `name: Foo` / `name: Foo = …` (the
-                    // `type:` field) records the declared type. A plain
-                    // `name = Foo()` leaves it `None`: Python is dynamic and PEP8
-                    // capitalization is too weak a signal to infer a constructor
-                    // type, so we fail closed rather than guess.
-                    let type_name = node
-                        .child_by_field_name("type")
-                        .map(|t| super::simple_type_name(node_text(&t, bytes), ".").to_owned());
-                    push_typed_binding(out, name, intro, BindingKind::Local, scopes, type_name);
-                }
+            if let Some(left) = node.child_by_field_name("left")
+                && left.kind() == "identifier"
+            {
+                let intro = left.start_byte();
+                let name = node_text(&left, bytes).to_owned();
+                // An explicit annotation `name: Foo` / `name: Foo = …` (the
+                // `type:` field) records the declared type. A plain
+                // `name = Foo()` leaves it `None`: Python is dynamic and PEP8
+                // capitalization is too weak a signal to infer a constructor
+                // type, so we fail closed rather than guess.
+                let type_name = node
+                    .child_by_field_name("type")
+                    .map(|t| super::simple_type_name(node_text(&t, bytes), ".").to_owned());
+                push_typed_binding(out, name, intro, BindingKind::Local, scopes, type_name);
             }
             for child in node.children(&mut node.walk()) {
                 collect_bindings_dfs(&child, bytes, scopes, out);
@@ -1238,19 +1237,19 @@ fn collect_params(params: &Node, bytes: &[u8], scopes: &[Scope], out: &mut Vec<B
                 .find(|c| c.kind() == "identifier"),
             _ => None,
         };
-        if let Some(id) = ident {
-            if id.kind() == "identifier" {
-                let intro = id.start_byte();
-                let name = node_text(&id, bytes).to_owned();
-                // Parameter type hints (`def f(x: Foo)`) live on the `type:`
-                // field of `typed_parameter` / `typed_default_parameter`.
-                // Untyped forms (bare identifier, `default_parameter`, splats)
-                // have no `type:` field → `None`.
-                let type_name = child
-                    .child_by_field_name("type")
-                    .map(|t| super::simple_type_name(node_text(&t, bytes), ".").to_owned());
-                push_typed_binding(out, name, intro, BindingKind::Param, scopes, type_name);
-            }
+        if let Some(id) = ident
+            && id.kind() == "identifier"
+        {
+            let intro = id.start_byte();
+            let name = node_text(&id, bytes).to_owned();
+            // Parameter type hints (`def f(x: Foo)`) live on the `type:`
+            // field of `typed_parameter` / `typed_default_parameter`.
+            // Untyped forms (bare identifier, `default_parameter`, splats)
+            // have no `type:` field → `None`.
+            let type_name = child
+                .child_by_field_name("type")
+                .map(|t| super::simple_type_name(node_text(&t, bytes), ".").to_owned());
+            push_typed_binding(out, name, intro, BindingKind::Param, scopes, type_name);
         }
     }
 }

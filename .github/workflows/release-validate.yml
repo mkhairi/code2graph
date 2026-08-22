@@ -26,7 +26,7 @@ jobs:
       source_sha: ${{ steps.contract.outputs.source_sha }}
       python_version: ${{ steps.contract.outputs.python_version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: validation-helper
       - id: tag
@@ -35,7 +35,7 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: python3 validation-helper/scripts/release/version_contract.py validate-tag "$TAG" --github-output "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0

@@ -352,10 +352,10 @@ fn emit_declaration(
             // Members are only meaningful for a named interface (there is always
             // one — TS has no anonymous interface declaration — but resolving the
             // name keeps the `Type` descriptor honest, mirroring the class arm).
-            if let Some(iface_name) = child_text(decl, "type_identifier", ctx.bytes) {
-                if let Some(body) = decl.child_by_field_name("body") {
-                    collect_interface_members(&body, ctx, namespaces, &iface_name, out);
-                }
+            if let Some(iface_name) = child_text(decl, "type_identifier", ctx.bytes)
+                && let Some(body) = decl.child_by_field_name("body")
+            {
+                collect_interface_members(&body, ctx, namespaces, &iface_name, out);
             }
         }
         "type_alias_declaration" => {
@@ -364,12 +364,11 @@ fn emit_declaration(
             // shape as an interface body; descend into its `object_type` value
             // and emit its members keyed under the alias's `Type` name. Other
             // aliased forms (unions, function types, …) have no member to emit.
-            if let Some(alias_name) = child_text(decl, "type_identifier", ctx.bytes) {
-                if let Some(value) = decl.child_by_field_name("value") {
-                    if value.kind() == "object_type" {
-                        collect_interface_members(&value, ctx, namespaces, &alias_name, out);
-                    }
-                }
+            if let Some(alias_name) = child_text(decl, "type_identifier", ctx.bytes)
+                && let Some(value) = decl.child_by_field_name("value")
+                && value.kind() == "object_type"
+            {
+                collect_interface_members(&value, ctx, namespaces, &alias_name, out);
             }
         }
         "enum_declaration" => {
@@ -706,19 +705,19 @@ fn collect_imports(
                                 continue;
                             }
                             // `name` field is the real (original) name, not the alias.
-                            if let Some(name_node) = specifier.child_by_field_name("name") {
-                                if name_node.kind() == "identifier" {
-                                    super::push_import_ref(
-                                        out,
-                                        super::node_text(&name_node, bytes),
-                                        &name_node,
-                                        file,
-                                        module_id,
-                                        &from_path,
-                                    );
-                                }
-                                // string-named imports (exotic) → skip silently
+                            if let Some(name_node) = specifier.child_by_field_name("name")
+                                && name_node.kind() == "identifier"
+                            {
+                                super::push_import_ref(
+                                    out,
+                                    super::node_text(&name_node, bytes),
+                                    &name_node,
+                                    file,
+                                    module_id,
+                                    &from_path,
+                                );
                             }
+                            // string-named imports (exotic) → skip silently
                         }
                     }
                     // Namespace import: `import * as ns from "x"` → skip
@@ -761,14 +760,13 @@ fn collect_commonjs_imports(
     out: &mut Vec<Reference>,
     module_id: &str,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
-            if func.kind() == "identifier" && node_text(&func, bytes) == "require" {
-                if let Some(from_path) = require_string_arg(node, bytes) {
-                    emit_require_bindings(node, bytes, file, out, module_id, &from_path);
-                }
-            }
-        }
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function")
+        && func.kind() == "identifier"
+        && node_text(&func, bytes) == "require"
+        && let Some(from_path) = require_string_arg(node, bytes)
+    {
+        emit_require_bindings(node, bytes, file, out, module_id, &from_path);
     }
     for child in node.children(&mut node.walk()) {
         collect_commonjs_imports(&child, bytes, file, out, module_id);
@@ -1301,14 +1299,12 @@ fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec
     if matches!(
         node.kind(),
         "assignment_expression" | "augmented_assignment_expression"
-    ) {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    ) && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1343,34 +1339,34 @@ fn collect_property_access_references(
     file: &str,
     out: &mut Vec<Reference>,
 ) {
-    if node.kind() == "member_expression" {
-        if let Some(property) = node.child_by_field_name("property") {
-            if property.kind() == "property_identifier" && !is_method_call_callee(node) {
-                let name = node_text(&property, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    let (qualifier, self_receiver) = match node.child_by_field_name("object") {
-                        Some(v) if v.kind() == "this" => (None, true),
-                        Some(v) if v.kind() == "identifier" => {
-                            (Some(node_text(&v, bytes).to_owned()), false)
-                        }
-                        _ => (None, false),
-                    };
-                    out.push(Reference {
-                        name: name.to_owned(),
-                        occ: node_occurrence(&property, file),
-                        role: RefRole::Read,
-                        source_module: None,
-                        from_path: None,
-                        is_reexport: false,
-                        imported_name: None,
-                        qualifier,
-                        scope: None,
-                        type_ref_ctx: None,
-                        cross_artifact: false,
-                        self_receiver,
-                    });
+    if node.kind() == "member_expression"
+        && let Some(property) = node.child_by_field_name("property")
+        && property.kind() == "property_identifier"
+        && !is_method_call_callee(node)
+    {
+        let name = node_text(&property, bytes);
+        if name.len() >= MIN_REF_LEN {
+            let (qualifier, self_receiver) = match node.child_by_field_name("object") {
+                Some(v) if v.kind() == "this" => (None, true),
+                Some(v) if v.kind() == "identifier" => {
+                    (Some(node_text(&v, bytes).to_owned()), false)
                 }
-            }
+                _ => (None, false),
+            };
+            out.push(Reference {
+                name: name.to_owned(),
+                occ: node_occurrence(&property, file),
+                role: RefRole::Read,
+                source_module: None,
+                from_path: None,
+                is_reexport: false,
+                imported_name: None,
+                qualifier,
+                scope: None,
+                type_ref_ctx: None,
+                cross_artifact: false,
+                self_receiver,
+            });
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1410,26 +1406,25 @@ fn collect_query_bindings(
     rules: &BindingRules,
     out: &mut Vec<Reference>,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
-            if func.kind() == "member_expression" {
-                let callee = node_text(&func, bytes);
-                for rule in rules.for_language(lang) {
-                    if rule.construct != callee {
-                        continue;
-                    }
-                    let Some(arguments) = node.child_by_field_name("arguments") else {
-                        continue;
-                    };
-                    let Some(arg) = arguments
-                        .named_children(&mut arguments.walk())
-                        .nth(rule.sql_arg)
-                    else {
-                        continue;
-                    };
-                    emit_embedded_sql_refs(&arg, "string_fragment", bytes, file, out);
-                }
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function")
+        && func.kind() == "member_expression"
+    {
+        let callee = node_text(&func, bytes);
+        for rule in rules.for_language(lang) {
+            if rule.construct != callee {
+                continue;
             }
+            let Some(arguments) = node.child_by_field_name("arguments") else {
+                continue;
+            };
+            let Some(arg) = arguments
+                .named_children(&mut arguments.walk())
+                .nth(rule.sql_arg)
+            else {
+                continue;
+            };
+            emit_embedded_sql_refs(&arg, "string_fragment", bytes, file, out);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1542,18 +1537,18 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
     } else if node.kind() == "variable_declarator" {
         // `let`/`const` (lexical_declaration) and `var` (variable_declaration)
         // both nest a `variable_declarator` with a `name` field.
-        if let Some(name) = node.child_by_field_name("name") {
-            if name.kind() == "identifier" {
-                let type_name = variable_declarator_type_name(node, bytes);
-                push_typed_binding(
-                    out,
-                    node_text(&name, bytes).to_owned(),
-                    name.start_byte(),
-                    BindingKind::Local,
-                    scopes,
-                    type_name,
-                );
-            }
+        if let Some(name) = node.child_by_field_name("name")
+            && name.kind() == "identifier"
+        {
+            let type_name = variable_declarator_type_name(node, bytes);
+            push_typed_binding(
+                out,
+                node_text(&name, bytes).to_owned(),
+                name.start_byte(),
+                BindingKind::Local,
+                scopes,
+                type_name,
+            );
         }
         for child in node.children(&mut node.walk()) {
             collect_bindings_dfs(&child, bytes, scopes, out);
@@ -1580,17 +1575,17 @@ fn collect_params(params: &Node, bytes: &[u8], scopes: &[Scope], out: &mut Vec<B
             ),
             _ => (None, None),
         };
-        if let Some(id) = ident {
-            if id.kind() == "identifier" {
-                push_typed_binding(
-                    out,
-                    node_text(&id, bytes).to_owned(),
-                    id.start_byte(),
-                    BindingKind::Param,
-                    scopes,
-                    type_name,
-                );
-            }
+        if let Some(id) = ident
+            && id.kind() == "identifier"
+        {
+            push_typed_binding(
+                out,
+                node_text(&id, bytes).to_owned(),
+                id.start_byte(),
+                BindingKind::Param,
+                scopes,
+                type_name,
+            );
         }
     }
 }

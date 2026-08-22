@@ -366,10 +366,8 @@ fn collect_members(
                     descriptors,
                     sig,
                 ));
-                if is_main {
-                    if let Some(s) = out.last_mut() {
-                        s.entry_points.push(EntryPoint::Main);
-                    }
+                if is_main && let Some(s) = out.last_mut() {
+                    s.entry_points.push(EntryPoint::Main);
                 }
             }
             "field_declaration" => {
@@ -659,14 +657,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// Member / subscript LHS (`obj.Field = …`, `arr[i] = …`) are out of scope
 /// in v1 — bare identifiers only.  Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment_expression" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment_expression"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -695,10 +692,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
         }
         "field_declaration" => {
             for child in node.children(&mut node.walk()) {
-                if child.kind() == "variable_declaration" {
-                    if let Some(ty) = child.child_by_field_name("type") {
-                        type_leaf(&ty, bytes, file, TypeRefContext::Field, out);
-                    }
+                if child.kind() == "variable_declaration"
+                    && let Some(ty) = child.child_by_field_name("type")
+                {
+                    type_leaf(&ty, bytes, file, TypeRefContext::Field, out);
                 }
             }
         }
@@ -855,23 +852,23 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
             }
         }
         "for_each_statement" => {
-            if let Some(name_node) = node.child_by_field_name("left") {
-                if name_node.kind() == "identifier" {
-                    let name = node_text(&name_node, bytes);
-                    let intro = name_node.start_byte();
-                    if innermost_scope(intro, scopes) != Some(0) {
-                        push_binding(out, name.to_owned(), intro, BindingKind::Local, scopes);
-                    }
+            if let Some(name_node) = node.child_by_field_name("left")
+                && name_node.kind() == "identifier"
+            {
+                let name = node_text(&name_node, bytes);
+                let intro = name_node.start_byte();
+                if innermost_scope(intro, scopes) != Some(0) {
+                    push_binding(out, name.to_owned(), intro, BindingKind::Local, scopes);
                 }
             }
         }
         "catch_clause" => {
-            if let Some(decl) = node.child_by_field_name("declaration") {
-                if let Some(name_node) = decl.child_by_field_name("name") {
-                    let name = node_text(&name_node, bytes);
-                    let intro = name_node.start_byte();
-                    push_binding(out, name.to_owned(), intro, BindingKind::Param, scopes);
-                }
+            if let Some(decl) = node.child_by_field_name("declaration")
+                && let Some(name_node) = decl.child_by_field_name("name")
+            {
+                let name = node_text(&name_node, bytes);
+                let intro = name_node.start_byte();
+                push_binding(out, name.to_owned(), intro, BindingKind::Param, scopes);
             }
         }
         _ => {}
@@ -883,22 +880,22 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
 
 fn collect_params(params: &Node, bytes: &[u8], scopes: &[Scope], out: &mut Vec<Binding>) {
     for child in params.named_children(&mut params.walk()) {
-        if child.kind() == "parameter" {
-            if let Some(name_node) = child.child_by_field_name("name") {
-                let name = node_text(&name_node, bytes);
-                let intro = name_node.start_byte();
-                let type_name = child
-                    .child_by_field_name("type")
-                    .map(|t| simple_type_name(node_text(&t, bytes), ".").to_owned());
-                push_typed_binding(
-                    out,
-                    name.to_owned(),
-                    intro,
-                    BindingKind::Param,
-                    scopes,
-                    type_name,
-                );
-            }
+        if child.kind() == "parameter"
+            && let Some(name_node) = child.child_by_field_name("name")
+        {
+            let name = node_text(&name_node, bytes);
+            let intro = name_node.start_byte();
+            let type_name = child
+                .child_by_field_name("type")
+                .map(|t| simple_type_name(node_text(&t, bytes), ".").to_owned());
+            push_typed_binding(
+                out,
+                name.to_owned(),
+                intro,
+                BindingKind::Param,
+                scopes,
+                type_name,
+            );
         }
     }
 }

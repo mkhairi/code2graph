@@ -291,21 +291,21 @@ fn collect_enum(node: &Node, ctx: &ExtractCtx, prefix: &[Descriptor], out: &mut 
     // Collect enum constants from enum_body.
     if let Some(body) = node.child_by_field_name("body") {
         for member in body.children(&mut body.walk()) {
-            if member.kind() == "enum_constant" {
-                if let Some(const_name) = field_text(&member, "name", ctx.bytes) {
-                    let mut const_desc = descriptors.clone();
-                    const_desc.push(Descriptor::Term(const_name.clone()));
-                    let visibility = dart_visibility(&const_name);
-                    out.push(make_symbol(
-                        ctx,
-                        &member,
-                        const_name,
-                        SymbolKind::Const,
-                        visibility,
-                        const_desc,
-                        one_line_signature(node_text(&member, ctx.bytes), &['{', ';', ',']),
-                    ));
-                }
+            if member.kind() == "enum_constant"
+                && let Some(const_name) = field_text(&member, "name", ctx.bytes)
+            {
+                let mut const_desc = descriptors.clone();
+                const_desc.push(Descriptor::Term(const_name.clone()));
+                let visibility = dart_visibility(&const_name);
+                out.push(make_symbol(
+                    ctx,
+                    &member,
+                    const_name,
+                    SymbolKind::Const,
+                    visibility,
+                    const_desc,
+                    one_line_signature(node_text(&member, ctx.bytes), &['{', ';', ',']),
+                ));
             }
         }
     }
@@ -421,21 +421,21 @@ fn emit_initialized_identifiers(
     out: &mut Vec<Symbol>,
 ) {
     for item in list_node.children(&mut list_node.walk()) {
-        if item.kind() == "initialized_identifier" {
-            if let Some(name) = field_text(&item, "name", ctx.bytes) {
-                let mut descriptors = prefix.to_vec();
-                descriptors.push(Descriptor::Term(name.clone()));
-                let visibility = dart_visibility(&name);
-                out.push(make_symbol(
-                    ctx,
-                    decl_node,
-                    name,
-                    SymbolKind::Static,
-                    visibility,
-                    descriptors,
-                    one_line_signature(node_text(decl_node, ctx.bytes), &['{', ';']),
-                ));
-            }
+        if item.kind() == "initialized_identifier"
+            && let Some(name) = field_text(&item, "name", ctx.bytes)
+        {
+            let mut descriptors = prefix.to_vec();
+            descriptors.push(Descriptor::Term(name.clone()));
+            let visibility = dart_visibility(&name);
+            out.push(make_symbol(
+                ctx,
+                decl_node,
+                name,
+                SymbolKind::Static,
+                visibility,
+                descriptors,
+                one_line_signature(node_text(decl_node, ctx.bytes), &['{', ';']),
+            ));
         }
     }
 }
@@ -487,10 +487,10 @@ fn collect_class_members(
                     if has_constructor {
                         // Find constructor_signature → name
                         for child in member.children(&mut member.walk()) {
-                            if child.kind() == "constructor_signature" {
-                                if let Some(name) = field_text(&child, "name", ctx.bytes) {
-                                    emit_method(name, &child, ctx, type_prefix, out);
-                                }
+                            if child.kind() == "constructor_signature"
+                                && let Some(name) = field_text(&child, "name", ctx.bytes)
+                            {
+                                emit_method(name, &child, ctx, type_prefix, out);
                             }
                         }
                     } else {
@@ -759,10 +759,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
     match node.kind() {
         "function_declaration" => {
             // return type lives on the function_signature under `signature`
-            if let Some(sig) = node.child_by_field_name("signature") {
-                if let Some(ret) = sig.child_by_field_name("return_type") {
-                    type_leaf(&ret, bytes, file, TypeRefContext::ReturnType, out);
-                }
+            if let Some(sig) = node.child_by_field_name("signature")
+                && let Some(ret) = sig.child_by_field_name("return_type")
+            {
+                type_leaf(&ret, bytes, file, TypeRefContext::ReturnType, out);
             }
         }
         "method_declaration" => {
@@ -771,10 +771,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
                 let fs = sig
                     .children(&mut sig.walk())
                     .find(|c| c.kind() == "function_signature");
-                if let Some(fs) = fs {
-                    if let Some(ret) = fs.child_by_field_name("return_type") {
-                        type_leaf(&ret, bytes, file, TypeRefContext::ReturnType, out);
-                    }
+                if let Some(fs) = fs
+                    && let Some(ret) = fs.child_by_field_name("return_type")
+                {
+                    type_leaf(&ret, bytes, file, TypeRefContext::ReturnType, out);
                 }
             }
         }
@@ -994,37 +994,37 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// fallback the direct `left == identifier` case (grammar may vary) is also
 /// handled. Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment_expression" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            match lhs.kind() {
-                // Actual Dart AST: left field is assignable_expression wrapping
-                // a bare identifier.
-                "assignable_expression" => {
-                    // Collect all direct identifier children in one walk.
-                    // Exactly one → bare target (Write); more than one → member/index
-                    // target (not a v1 Write). Context already guarantees lhs is the
-                    // `left` field of `assignment_expression`, so the grandparent
-                    // checks inside `is_bare_assignable_target` are redundant here.
-                    let id_children: Vec<_> = lhs
-                        .children(&mut lhs.walk())
-                        .filter(|c| c.kind() == "identifier")
-                        .collect();
-                    if let [id_node] = id_children.as_slice() {
-                        let name = node_text(id_node, bytes);
-                        if name.len() >= MIN_REF_LEN {
-                            push_ref(out, name, id_node, file, RefRole::Write);
-                        }
-                    }
-                }
-                // Defensive fallback: direct identifier as left field.
-                "identifier" => {
-                    let name = node_text(&lhs, bytes);
+    if node.kind() == "assignment_expression"
+        && let Some(lhs) = node.child_by_field_name("left")
+    {
+        match lhs.kind() {
+            // Actual Dart AST: left field is assignable_expression wrapping
+            // a bare identifier.
+            "assignable_expression" => {
+                // Collect all direct identifier children in one walk.
+                // Exactly one → bare target (Write); more than one → member/index
+                // target (not a v1 Write). Context already guarantees lhs is the
+                // `left` field of `assignment_expression`, so the grandparent
+                // checks inside `is_bare_assignable_target` are redundant here.
+                let id_children: Vec<_> = lhs
+                    .children(&mut lhs.walk())
+                    .filter(|c| c.kind() == "identifier")
+                    .collect();
+                if let [id_node] = id_children.as_slice() {
+                    let name = node_text(id_node, bytes);
                     if name.len() >= MIN_REF_LEN {
-                        push_ref(out, name, &lhs, file, RefRole::Write);
+                        push_ref(out, name, id_node, file, RefRole::Write);
                     }
                 }
-                _ => {}
             }
+            // Defensive fallback: direct identifier as left field.
+            "identifier" => {
+                let name = node_text(&lhs, bytes);
+                if name.len() >= MIN_REF_LEN {
+                    push_ref(out, name, &lhs, file, RefRole::Write);
+                }
+            }
+            _ => {}
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1190,14 +1190,14 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
 fn collect_params(params: &Node, bytes: &[u8], scopes: &[Scope], out: &mut Vec<Binding>) {
     for child in params.named_children(&mut params.walk()) {
         // formal_parameter has a `name` field (identifier).
-        if child.kind() == "formal_parameter" {
-            if let Some(name) = field_text(&child, "name", bytes) {
-                let intro = child.start_byte();
-                // Declared type is a plain `type` child (not a named field).
-                let type_name =
-                    child_text(&child, "type", bytes).map(|t| simple_type_name(&t, ".").to_owned());
-                push_typed_binding(out, name, intro, BindingKind::Param, scopes, type_name);
-            }
+        if child.kind() == "formal_parameter"
+            && let Some(name) = field_text(&child, "name", bytes)
+        {
+            let intro = child.start_byte();
+            // Declared type is a plain `type` child (not a named field).
+            let type_name =
+                child_text(&child, "type", bytes).map(|t| simple_type_name(&t, ".").to_owned());
+            push_typed_binding(out, name, intro, BindingKind::Param, scopes, type_name);
         }
     }
 }

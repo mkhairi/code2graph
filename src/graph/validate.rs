@@ -128,12 +128,12 @@ pub fn validate_file_facts_with_context(
                 "reference {index} has qualifier outside call, type-ref, implementation, or read role"
             )));
         }
-        if let Some(scope) = reference.scope {
-            if !facts.scopes[scope].span.contains(reference.occ.byte) {
-                return Err(malformed(format!(
-                    "reference {index} is outside scope {scope}"
-                )));
-            }
+        if let Some(scope) = reference.scope
+            && !facts.scopes[scope].span.contains(reference.occ.byte)
+        {
+            return Err(malformed(format!(
+                "reference {index} is outside scope {scope}"
+            )));
         }
         if reference.type_ref_ctx.is_some() && reference.role != super::RefRole::TypeRef {
             return Err(malformed(format!(
@@ -214,12 +214,12 @@ fn validate_structure(file: &FileFacts) -> Result<()> {
         }
     }
     for (index, scope) in file.scopes.iter().enumerate() {
-        if let Some(parent) = scope.parent {
-            if parent >= file.scopes.len() {
-                return Err(malformed(format!(
-                    "scope {index} has invalid parent {parent}"
-                )));
-            }
+        if let Some(parent) = scope.parent
+            && parent >= file.scopes.len()
+        {
+            return Err(malformed(format!(
+                "scope {index} has invalid parent {parent}"
+            )));
         }
     }
     for start in 0..file.scopes.len() {
@@ -235,13 +235,13 @@ fn validate_structure(file: &FileFacts) -> Result<()> {
         }
     }
     for reference in &file.references {
-        if let Some(scope) = reference.scope {
-            if scope >= file.scopes.len() {
-                return Err(malformed(format!(
-                    "reference {} has invalid scope {scope}",
-                    reference.name
-                )));
-            }
+        if let Some(scope) = reference.scope
+            && scope >= file.scopes.len()
+        {
+            return Err(malformed(format!(
+                "reference {} has invalid scope {scope}",
+                reference.name
+            )));
         }
     }
     for binding in &file.bindings {

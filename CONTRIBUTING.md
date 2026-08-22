@@ -63,7 +63,7 @@ These are bright lines, not style preferences. A PR that crosses one will be ask
 
 ## Development Setup
 
-**Requirements:** Rust stable (see `rust-toolchain.toml` / `Cargo.toml` `rust-version`; MSRV is **1.85**, edition **2024**). No system dependencies — tree-sitter grammars build from source via `cc`.
+**Requirements:** Rust stable. The MSRV lives in `Cargo.toml` `rust-version` — `cli/` declares its own, higher floor. No system dependencies — tree-sitter grammars build from source via `cc`.
 
 ```bash
 git clone https://github.com/nodedb-lab/code2graph.git

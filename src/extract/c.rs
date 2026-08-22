@@ -253,10 +253,8 @@ fn collect_symbols(root: &Node, bytes: &[u8], file: &str, namespaces: &[String])
                     },
                 );
                 // C `main` is always a free function — name-only detection.
-                if is_main {
-                    if let Some(s) = out.last_mut() {
-                        s.entry_points.push(EntryPoint::Main);
-                    }
+                if is_main && let Some(s) = out.last_mut() {
+                    s.entry_points.push(EntryPoint::Main);
                 }
             }
 
@@ -269,17 +267,17 @@ fn collect_symbols(root: &Node, bytes: &[u8], file: &str, namespaces: &[String])
 
                 // Step 1: if the `type` field is a struct/union/enum WITH a body,
                 // emit a type symbol for the aggregate definition itself.
-                if let Some(spec) = child.child_by_field_name("type") {
-                    if let Some((agg_kind, agg_name)) = aggregate_type_symbol(&spec, bytes) {
-                        push(
-                            &mut out,
-                            &spec,
-                            agg_name.clone(),
-                            agg_kind,
-                            vis,
-                            Descriptor::Type(agg_name),
-                        );
-                    }
+                if let Some(spec) = child.child_by_field_name("type")
+                    && let Some((agg_kind, agg_name)) = aggregate_type_symbol(&spec, bytes)
+                {
+                    push(
+                        &mut out,
+                        &spec,
+                        agg_name.clone(),
+                        agg_kind,
+                        vis,
+                        Descriptor::Type(agg_name),
+                    );
                 }
 
                 // Step 2: emit a symbol for each declarator in the declaration.
@@ -316,17 +314,17 @@ fn collect_symbols(root: &Node, bytes: &[u8], file: &str, namespaces: &[String])
             "type_definition" => {
                 // Step 1: if the `type` field is a named struct/union/enum WITH a body,
                 // emit a type symbol for the aggregate.
-                if let Some(spec) = child.child_by_field_name("type") {
-                    if let Some((agg_kind, agg_name)) = aggregate_type_symbol(&spec, bytes) {
-                        push(
-                            &mut out,
-                            &spec,
-                            agg_name.clone(),
-                            agg_kind,
-                            Visibility::Public,
-                            Descriptor::Type(agg_name),
-                        );
-                    }
+                if let Some(spec) = child.child_by_field_name("type")
+                    && let Some((agg_kind, agg_name)) = aggregate_type_symbol(&spec, bytes)
+                {
+                    push(
+                        &mut out,
+                        &spec,
+                        agg_name.clone(),
+                        agg_kind,
+                        Visibility::Public,
+                        Descriptor::Type(agg_name),
+                    );
                 }
 
                 // Step 2: emit the typedef alias.
@@ -503,12 +501,11 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
             // Use find_function_declarator to handle pointer-return types like
             // `int *f(int a)`, where the declarator field is a pointer_declarator
             // wrapping the function_declarator.
-            if let Some(decl) = node.child_by_field_name("declarator") {
-                if let Some(fn_decl) = find_function_declarator(&decl) {
-                    if let Some(params) = fn_decl.child_by_field_name("parameters") {
-                        collect_params(&params, bytes, scopes, out);
-                    }
-                }
+            if let Some(decl) = node.child_by_field_name("declarator")
+                && let Some(fn_decl) = find_function_declarator(&decl)
+                && let Some(params) = fn_decl.child_by_field_name("parameters")
+            {
+                collect_params(&params, bytes, scopes, out);
             }
             // Recurse into all children to pick up body bindings.
             for child in node.children(&mut node.walk()) {
@@ -609,10 +606,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
         // Function definition return type: `Config make(void) { ... }`.
         // The `type:` field on a `function_definition` is the return specifier.
         "function_definition" => {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                if let Some((name, leaf)) = type_leaf(&type_node, bytes) {
-                    push_type_ref(out, &name, &leaf, file, TypeRefContext::ReturnType);
-                }
+            if let Some(type_node) = node.child_by_field_name("type")
+                && let Some((name, leaf)) = type_leaf(&type_node, bytes)
+            {
+                push_type_ref(out, &name, &leaf, file, TypeRefContext::ReturnType);
             }
             // Recurse into parameters and body.
             for child in node.children(&mut node.walk()) {
@@ -623,10 +620,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
         // Parameter type: `void f(Config c)` — the `type:` field of
         // `parameter_declaration` is the type specifier.
         "parameter_declaration" => {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                if let Some((name, leaf)) = type_leaf(&type_node, bytes) {
-                    push_type_ref(out, &name, &leaf, file, TypeRefContext::ParameterType);
-                }
+            if let Some(type_node) = node.child_by_field_name("type")
+                && let Some((name, leaf)) = type_leaf(&type_node, bytes)
+            {
+                push_type_ref(out, &name, &leaf, file, TypeRefContext::ParameterType);
             }
             // parameter_declaration has no interesting sub-trees for type refs.
             return;
@@ -634,10 +631,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
         // Struct/union field type: `struct T { Config conf; };` — `field_declaration`
         // carries a `type:` field for the field's type specifier.
         "field_declaration" => {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                if let Some((name, leaf)) = type_leaf(&type_node, bytes) {
-                    push_type_ref(out, &name, &leaf, file, TypeRefContext::Field);
-                }
+            if let Some(type_node) = node.child_by_field_name("type")
+                && let Some((name, leaf)) = type_leaf(&type_node, bytes)
+            {
+                push_type_ref(out, &name, &leaf, file, TypeRefContext::Field);
             }
             return;
         }
@@ -748,14 +745,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// Note: `int x = 5;` is a `declaration` with an `init_declarator` (a binding
 /// introduction), NOT an `assignment_expression` — correctly excluded.
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment_expression" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment_expression"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {

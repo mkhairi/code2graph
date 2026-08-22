@@ -350,10 +350,10 @@ fn collect_symbols(root: &Node, ctx: &ExtractCtx, namespaces: &[String]) -> Vec<
             signature,
         ));
         // Populate entry-point markers for function definitions only.
-        if kind == SymbolKind::Function {
-            if let Some(sym) = out.last_mut() {
-                sym.entry_points = entry_points_for_rust(&sym_name, &child, bytes);
-            }
+        if kind == SymbolKind::Function
+            && let Some(sym) = out.last_mut()
+        {
+            sym.entry_points = entry_points_for_rust(&sym_name, &child, bytes);
         }
 
         // For trait definitions, emit symbols for their member methods and
@@ -686,23 +686,23 @@ fn entry_points_for_rust(fn_name: &str, func: &Node, bytes: &[u8]) -> Vec<EntryP
         // The `attribute` node's path is its FIRST named child (an `identifier`
         // or `scoped_identifier`) — tree-sitter-rust has no `path:` field on
         // `attribute`; verified against node-types.json.
-        if let Some(attr) = node.named_children(&mut node.walk()).next() {
-            if attr.kind() == "attribute" {
-                // First named child of `attribute` is the macro path node.
-                if let Some(path_node) = attr.named_children(&mut attr.walk()).next() {
-                    // Extract the terminal identifier:
-                    //   - `identifier`        → its own text (bare #[get(...)])
-                    //   - `scoped_identifier` → its `name` field (qualified #[a::b::get(...)])
-                    let terminal = match path_node.kind() {
-                        "identifier" => node_text(&path_node, bytes),
-                        "scoped_identifier" => path_node
-                            .child_by_field_name("name")
-                            .map_or("", |n| node_text(&n, bytes)),
-                        _ => "",
-                    };
-                    if !terminal.is_empty() && RUST_ROUTE_ATTRS.contains(&terminal) {
-                        markers.push(EntryPoint::HttpRoute(terminal.to_owned()));
-                    }
+        if let Some(attr) = node.named_children(&mut node.walk()).next()
+            && attr.kind() == "attribute"
+        {
+            // First named child of `attribute` is the macro path node.
+            if let Some(path_node) = attr.named_children(&mut attr.walk()).next() {
+                // Extract the terminal identifier:
+                //   - `identifier`        → its own text (bare #[get(...)])
+                //   - `scoped_identifier` → its `name` field (qualified #[a::b::get(...)])
+                let terminal = match path_node.kind() {
+                    "identifier" => node_text(&path_node, bytes),
+                    "scoped_identifier" => path_node
+                        .child_by_field_name("name")
+                        .map_or("", |n| node_text(&n, bytes)),
+                    _ => "",
+                };
+                if !terminal.is_empty() && RUST_ROUTE_ATTRS.contains(&terminal) {
+                    markers.push(EntryPoint::HttpRoute(terminal.to_owned()));
                 }
             }
         }
@@ -853,16 +853,16 @@ fn collect_inheritance(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Refe
 /// location-based oracle matching lines up with the `mod x;` site. Recurses into
 /// `mod` blocks so nested declarations are also captured.
 fn collect_module_decl_refs(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "mod_item" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            push_ref(
-                out,
-                node_text(&name_node, bytes),
-                &name_node,
-                file,
-                RefRole::ModuleRef,
-            );
-        }
+    if node.kind() == "mod_item"
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        push_ref(
+            out,
+            node_text(&name_node, bytes),
+            &name_node,
+            file,
+            RefRole::ModuleRef,
+        );
     }
     for child in node.children(&mut node.walk()) {
         collect_module_decl_refs(&child, bytes, file, out);
@@ -1341,14 +1341,12 @@ fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec
     if matches!(
         node.kind(),
         "assignment_expression" | "compound_assignment_expr"
-    ) {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    ) && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1388,34 +1386,34 @@ fn collect_field_access_references(
     if matches!(node.kind(), "macro_definition" | "macro_invocation") {
         return;
     }
-    if node.kind() == "field_expression" {
-        if let Some(field) = node.child_by_field_name("field") {
-            if field.kind() == "field_identifier" && !is_method_call_callee(node) {
-                let name = node_text(&field, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    let (qualifier, self_receiver) = match node.child_by_field_name("value") {
-                        Some(v) if v.kind() == "self" => (None, true),
-                        Some(v) if v.kind() == "identifier" => {
-                            (Some(node_text(&v, bytes).to_owned()), false)
-                        }
-                        _ => (None, false),
-                    };
-                    out.push(Reference {
-                        name: name.to_owned(),
-                        occ: node_occurrence(&field, file),
-                        role: RefRole::Read,
-                        source_module: None,
-                        from_path: None,
-                        is_reexport: false,
-                        imported_name: None,
-                        qualifier,
-                        scope: None,
-                        type_ref_ctx: None,
-                        cross_artifact: false,
-                        self_receiver,
-                    });
+    if node.kind() == "field_expression"
+        && let Some(field) = node.child_by_field_name("field")
+        && field.kind() == "field_identifier"
+        && !is_method_call_callee(node)
+    {
+        let name = node_text(&field, bytes);
+        if name.len() >= MIN_REF_LEN {
+            let (qualifier, self_receiver) = match node.child_by_field_name("value") {
+                Some(v) if v.kind() == "self" => (None, true),
+                Some(v) if v.kind() == "identifier" => {
+                    (Some(node_text(&v, bytes).to_owned()), false)
                 }
-            }
+                _ => (None, false),
+            };
+            out.push(Reference {
+                name: name.to_owned(),
+                occ: node_occurrence(&field, file),
+                role: RefRole::Read,
+                source_module: None,
+                from_path: None,
+                is_reexport: false,
+                imported_name: None,
+                qualifier,
+                scope: None,
+                type_ref_ctx: None,
+                cross_artifact: false,
+                self_receiver,
+            });
         }
     }
     for child in node.children(&mut node.walk()) {
@@ -1456,24 +1454,24 @@ fn collect_query_bindings(
 ) {
     match node.kind() {
         "call_expression" => {
-            if let Some(func) = node.child_by_field_name("function") {
-                if func.kind() == "scoped_identifier" {
-                    let callee = node_text(&func, bytes);
-                    for rule in rules.for_language(Language::Rust) {
-                        if rule.construct != callee {
-                            continue;
-                        }
-                        let Some(arguments) = node.child_by_field_name("arguments") else {
-                            continue;
-                        };
-                        let Some(arg) = arguments
-                            .named_children(&mut arguments.walk())
-                            .nth(rule.sql_arg)
-                        else {
-                            continue;
-                        };
-                        emit_bound_sql_refs(&arg, bytes, file, out);
+            if let Some(func) = node.child_by_field_name("function")
+                && func.kind() == "scoped_identifier"
+            {
+                let callee = node_text(&func, bytes);
+                for rule in rules.for_language(Language::Rust) {
+                    if rule.construct != callee {
+                        continue;
                     }
+                    let Some(arguments) = node.child_by_field_name("arguments") else {
+                        continue;
+                    };
+                    let Some(arg) = arguments
+                        .named_children(&mut arguments.walk())
+                        .nth(rule.sql_arg)
+                    else {
+                        continue;
+                    };
+                    emit_bound_sql_refs(&arg, bytes, file, out);
                 }
             }
         }
@@ -1682,16 +1680,16 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
             }
         }
         "let_declaration" => {
-            if let Some(pattern_node) = node.child_by_field_name("pattern") {
-                if let Some(ident_node) = resolve_pattern_ident(&pattern_node) {
-                    let intro = ident_node.start_byte();
-                    let name = node_text(&ident_node, bytes).to_owned();
-                    let type_name = let_declaration_type_name(node, bytes);
-                    push_typed_binding(out, name, intro, BindingKind::Local, scopes, type_name);
-                }
-                // NOTE: destructuring patterns (tuple, struct, slice, …) are
-                // not handled in this unit — see `resolve_pattern_ident`.
+            if let Some(pattern_node) = node.child_by_field_name("pattern")
+                && let Some(ident_node) = resolve_pattern_ident(&pattern_node)
+            {
+                let intro = ident_node.start_byte();
+                let name = node_text(&ident_node, bytes).to_owned();
+                let type_name = let_declaration_type_name(node, bytes);
+                push_typed_binding(out, name, intro, BindingKind::Local, scopes, type_name);
             }
+            // NOTE: destructuring patterns (tuple, struct, slice, …) are
+            // not handled in this unit — see `resolve_pattern_ident`.
             // Recurse into children (e.g. the value expression may contain
             // closures with their own params).
             for child in node.children(&mut node.walk()) {

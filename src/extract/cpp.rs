@@ -328,10 +328,8 @@ fn process_node(node: &Node, namespaces: &[String], ctx: &ExtractCtx, out: &mut 
             );
             // Only free/namespace functions reach this arm — class methods are
             // handled in `collect_members`, so `Foo::main` is never flagged.
-            if is_main {
-                if let Some(s) = out.last_mut() {
-                    s.entry_points.push(EntryPoint::Main);
-                }
+            if is_main && let Some(s) = out.last_mut() {
+                s.entry_points.push(EntryPoint::Main);
             }
         }
 
@@ -753,12 +751,11 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
         "function_definition" => {
             // Parameters live in function_declarator → parameters.
             // Use find_function_declarator to handle pointer/reference-return types.
-            if let Some(decl) = node.child_by_field_name("declarator") {
-                if let Some(fn_decl) = find_function_declarator(&decl) {
-                    if let Some(params) = fn_decl.child_by_field_name("parameters") {
-                        collect_params(&params, bytes, scopes, out);
-                    }
-                }
+            if let Some(decl) = node.child_by_field_name("declarator")
+                && let Some(fn_decl) = find_function_declarator(&decl)
+                && let Some(params) = fn_decl.child_by_field_name("parameters")
+            {
+                collect_params(&params, bytes, scopes, out);
             }
             // Recurse into all children to pick up body bindings.
             for child in node.children(&mut node.walk()) {
@@ -767,10 +764,10 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
         }
         "lambda_expression" => {
             // Lambda parameters live in: declarator (abstract_function_declarator) → parameters.
-            if let Some(fn_decl) = node.child_by_field_name("declarator") {
-                if let Some(params) = fn_decl.child_by_field_name("parameters") {
-                    collect_params(&params, bytes, scopes, out);
-                }
+            if let Some(fn_decl) = node.child_by_field_name("declarator")
+                && let Some(params) = fn_decl.child_by_field_name("parameters")
+            {
+                collect_params(&params, bytes, scopes, out);
             }
             // Recurse into all children to pick up body bindings.
             for child in node.children(&mut node.walk()) {
@@ -787,21 +784,21 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
                 .and_then(|t| type_leaf_name(&t, bytes));
             let mut cursor = node.walk();
             for (i, child) in node.children(&mut cursor).enumerate() {
-                if node.field_name_for_child(i as u32) == Some("declarator") {
-                    if let Some((name, _)) = declarator_name(&child, bytes) {
-                        let intro = child.start_byte();
-                        if let Some(sid) = innermost_scope(intro, scopes) {
-                            if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                                push_typed_binding(
-                                    out,
-                                    name,
-                                    intro,
-                                    BindingKind::Local,
-                                    scopes,
-                                    decl_type.clone(),
-                                );
-                            }
-                        }
+                if node.field_name_for_child(i as u32) == Some("declarator")
+                    && let Some((name, _)) = declarator_name(&child, bytes)
+                {
+                    let intro = child.start_byte();
+                    if let Some(sid) = innermost_scope(intro, scopes)
+                        && matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block)
+                    {
+                        push_typed_binding(
+                            out,
+                            name,
+                            intro,
+                            BindingKind::Local,
+                            scopes,
+                            decl_type.clone(),
+                        );
                     }
                 }
                 // Recurse into EVERY child, including the declarator: a C++ initializer
@@ -813,14 +810,14 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
         }
         "for_range_loop" => {
             // Range-based for: `for (int v : container)` — the declarator field.
-            if let Some(decl) = node.child_by_field_name("declarator") {
-                if let Some((name, _)) = declarator_name(&decl, bytes) {
-                    let intro = decl.start_byte();
-                    if let Some(sid) = innermost_scope(intro, scopes) {
-                        if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                            push_binding(out, name, intro, BindingKind::Local, scopes);
-                        }
-                    }
+            if let Some(decl) = node.child_by_field_name("declarator")
+                && let Some((name, _)) = declarator_name(&decl, bytes)
+            {
+                let intro = decl.start_byte();
+                if let Some(sid) = innermost_scope(intro, scopes)
+                    && matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block)
+                {
+                    push_binding(out, name, intro, BindingKind::Local, scopes);
                 }
             }
             // Recurse into children to catch nested bindings.
@@ -963,14 +960,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// Member / subscript / dereference LHS (`obj.field = …`, `arr[i] = …`,
 /// `*p = …`) are not covered in v1 — only bare identifiers. Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment_expression" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment_expression"
+        && let Some(lhs) = node.child_by_field_name("left")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {

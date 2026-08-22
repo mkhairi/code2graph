@@ -31,14 +31,14 @@ A purpose-neutral, language-agnostic code-graph extraction library. It turns sou
 <p>
   <a href="https://crates.io/crates/code2graph"><img src="https://img.shields.io/crates/v/code2graph?logo=rust" alt="crates.io"></a>
   <a href="https://pypi.org/project/code2graph-rs/"><img src="https://img.shields.io/pypi/v/code2graph-rs?logo=pypi&logoColor=white&label=pypi" alt="PyPI"></a>
-  <a href="https://www.npmjs.com/package/@nodedb-lab/code2graph"><img src="https://img.shields.io/npm/v/@nodedb-lab/code2graph?logo=npm" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@nodedb-lab/code2graph"><img src="https://img.shields.io/npm/v/@nodedb-lab/code2graph?logo=npm" alt="npm"></a> 
+  <a href="https://crates.io/crates/code2graph"><img src="https://img.shields.io/crates/msrv/code2graph?logo=rust&label=rustc" alt="MSRV"></a>
   <a href="https://docs.rs/code2graph"><img src="https://img.shields.io/docsrs/code2graph?logo=docsdotrs&logoColor=white" alt="docs.rs"></a>
   <a href="https://github.com/nodedb-lab/code2graph/actions/workflows/ci.yml"><img src="https://github.com/nodedb-lab/code2graph/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
 <p>
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0">
-  <img src="https://img.shields.io/badge/rustc-1.85%2B-orange" alt="MSRV 1.85">
   <img src="https://img.shields.io/badge/edition-2024-purple" alt="Edition 2024">
   <img src="https://img.shields.io/badge/status-pre--0.1-yellow" alt="Status: pre-0.1">
 </p>
@@ -83,13 +83,13 @@ It's **not** for you if you want a turnkey, batteries-included code-intelligence
 
 Choose the surface that owns the work you need:
 
-| Surface | Package | Install |
-| --- | --- | --- |
-| Conversion primitive | [`code2graph`](https://crates.io/crates/code2graph) | `cargo add code2graph` |
-| Optional in-memory query index | [`code2graph-query`](https://crates.io/crates/code2graph-query) | `cargo add code2graph-query` |
-| Project-query CLI (`code2graph` binary) | [`code2graph-cli`](https://crates.io/crates/code2graph-cli) | `cargo install code2graph-cli` |
-| Python binding | [`code2graph-rs`](https://pypi.org/project/code2graph-rs/) | `pip install code2graph-rs` |
-| Node / Bun binding | [`@nodedb-lab/code2graph`](https://www.npmjs.com/package/@nodedb-lab/code2graph) | `npm install @nodedb-lab/code2graph` |
+| Surface                                 | Package                                                                          | Install                              |
+| --------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------ |
+| Conversion primitive                    | [`code2graph`](https://crates.io/crates/code2graph)                              | `cargo add code2graph`               |
+| Optional in-memory query index          | [`code2graph-query`](https://crates.io/crates/code2graph-query)                  | `cargo add code2graph-query`         |
+| Project-query CLI (`code2graph` binary) | [`code2graph-cli`](https://crates.io/crates/code2graph-cli)                      | `cargo install code2graph-cli`       |
+| Python binding                          | [`code2graph-rs`](https://pypi.org/project/code2graph-rs/)                       | `pip install code2graph-rs`          |
+| Node / Bun binding                      | [`@nodedb-lab/code2graph`](https://www.npmjs.com/package/@nodedb-lab/code2graph) | `npm install @nodedb-lab/code2graph` |
 
 `code2graph-query` is optional and storage-free: it builds an owned in-memory index over a resolved graph, leaving persistence to its caller. A `CodeGraph` contains the extracted symbol definitions plus resolved edges; each edge records its source and target IDs, relationship role, confidence, provenance, and reference occurrence.
 
@@ -187,7 +187,7 @@ Resolution is **pluggable behind the `Resolver` trait** — the tier seam. Every
 | Tier  | Resolver              | Confidence         | Behaviour                                                                                                                                                                                                                                                          |
 | ----- | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **A** | `SymbolTableResolver` | `NameOnly`         | Fast, all languages, **recall-first**. An ambiguous name links to _all_ same-named definitions.                                                                                                                                                                    |
-| **B** | `ScopeGraphResolver`  | `Scoped` / `Exact` | Scope-aware: resolves through lexical scopes, imports, and qualified paths. It emits only syntactically supported resolutions and marks the resulting confidence; it is not type-checking.                                                                             |
+| **B** | `ScopeGraphResolver`  | `Scoped` / `Exact` | Scope-aware: resolves through lexical scopes, imports, and qualified paths. It emits only syntactically supported resolutions and marks the resulting confidence; it is not type-checking.                                                                         |
 | —     | `FfiBridgeResolver`   | —                  | Links cross-language boundaries (e.g. a `#[no_mangle]` Rust fn called from C, a PyO3 `#[pyfunction]` from Python, a `#[wasm_bindgen]`/`#[napi]` fn from JS/TS, a Java `native` method) by ABI name — even when the exported name differs from the definition name. |
 
 Both tiers emit the same shape, so a consumer reads the output identically and chooses the tier by the confidence it needs. The scope-aware tier is implemented for a growing subset of languages; others fall back to the recall-first baseline. Identity rendering and the graph schema may still evolve before `0.1`.

@@ -4,7 +4,9 @@
 name = "code2graph-cli"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# `zerompk` (cache codec) uses `core::hint::cold_path`, stable since 1.95, so the
+# CLI floor sits above the workspace library MSRV.
+rust-version = "1.95"
 license.workspace = true
 description = "Standalone project query and indexing consumer for code2graph."
 repository = "https://github.com/nodedb-lab/code2graph"
@@ -25,16 +27,16 @@ serde_json.workspace = true
 thiserror.workspace = true
 ignore = "0.4"
 blake3 = "1"
-toml = "0.8"
+toml = "1"
 directories.workspace = true
-zerompk = { version = "=0.6.0", features = ["derive"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+zerompk = { version = "=0.6.1", features = ["derive"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_JobObjects",

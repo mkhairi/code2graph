@@ -286,21 +286,21 @@ fn collect_enum_values(
     out: &mut Vec<Symbol>,
 ) {
     for child in enum_node.children(&mut enum_node.walk()) {
-        if child.kind() == "declEnumValue" {
-            if let Some(val_name) = field_text(&child, "name", ctx.bytes) {
-                let mut descriptors = type_prefix.to_vec();
-                descriptors.push(Descriptor::Term(val_name.clone()));
-                out.push(make_symbol(
-                    ctx,
-                    &child,
-                    val_name,
-                    SymbolKind::Const,
-                    // Enum values are part of a unit-level type — always public.
-                    Visibility::Public,
-                    descriptors,
-                    one_line_signature(node_text(&child, ctx.bytes), &['{', ';', ',']),
-                ));
-            }
+        if child.kind() == "declEnumValue"
+            && let Some(val_name) = field_text(&child, "name", ctx.bytes)
+        {
+            let mut descriptors = type_prefix.to_vec();
+            descriptors.push(Descriptor::Term(val_name.clone()));
+            out.push(make_symbol(
+                ctx,
+                &child,
+                val_name,
+                SymbolKind::Const,
+                // Enum values are part of a unit-level type — always public.
+                Visibility::Public,
+                descriptors,
+                one_line_signature(node_text(&child, ctx.bytes), &['{', ';', ',']),
+            ));
         }
     }
 }
@@ -440,37 +440,34 @@ fn emit_field(
 /// Skips method implementations like `procedure TFoo.Run; begin end;`.
 fn collect_impl_procs(node: &Node, ctx: &ExtractCtx, prefix: &[Descriptor], out: &mut Vec<Symbol>) {
     for child in node.children(&mut node.walk()) {
-        if child.kind() == "defProc" {
-            if let Some(header) = child.child_by_field_name("header") {
-                if header.kind() == "declProc" {
-                    // The name field of the declProc tells us if it's a method impl.
-                    // Method impls have `genericDot` (e.g. `TFoo.Run`); standalone procs
-                    // have a plain `identifier`.
-                    let name_is_plain_ident = header
-                        .child_by_field_name("name")
-                        .map(|n| n.kind() == "identifier")
-                        .unwrap_or(false);
+        if child.kind() == "defProc"
+            && let Some(header) = child.child_by_field_name("header")
+            && header.kind() == "declProc"
+        {
+            // The name field of the declProc tells us if it's a method impl.
+            // Method impls have `genericDot` (e.g. `TFoo.Run`); standalone procs
+            // have a plain `identifier`.
+            let name_is_plain_ident = header
+                .child_by_field_name("name")
+                .map(|n| n.kind() == "identifier")
+                .unwrap_or(false);
 
-                    if name_is_plain_ident {
-                        if let Some(name) = field_text(&header, "name", ctx.bytes) {
-                            let mut descriptors = prefix.to_vec();
-                            descriptors.push(Descriptor::Method {
-                                name: name.clone(),
-                                disambiguator: crate::symbol::MethodDisambiguator::empty(),
-                            });
-                            out.push(make_symbol(
-                                ctx,
-                                &child,
-                                name,
-                                SymbolKind::Function,
-                                // Standalone top-level procedures/functions are public.
-                                Visibility::Public,
-                                descriptors,
-                                one_line_signature(node_text(&header, ctx.bytes), &[';']),
-                            ));
-                        }
-                    }
-                }
+            if name_is_plain_ident && let Some(name) = field_text(&header, "name", ctx.bytes) {
+                let mut descriptors = prefix.to_vec();
+                descriptors.push(Descriptor::Method {
+                    name: name.clone(),
+                    disambiguator: crate::symbol::MethodDisambiguator::empty(),
+                });
+                out.push(make_symbol(
+                    ctx,
+                    &child,
+                    name,
+                    SymbolKind::Function,
+                    // Standalone top-level procedures/functions are public.
+                    Visibility::Public,
+                    descriptors,
+                    one_line_signature(node_text(&header, ctx.bytes), &[';']),
+                ));
             }
         }
     }
@@ -694,14 +691,13 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// v1. `var`/`const` declarations never use `:=` in the Pascal grammar (they use
 /// `=` via `defaultValue`), so no parent-exclusion is needed. Applies [`MIN_REF_LEN`].
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment" {
-        if let Some(lhs) = node.child_by_field_name("lhs") {
-            if lhs.kind() == "identifier" {
-                let name = node_text(&lhs, bytes);
-                if name.len() >= MIN_REF_LEN {
-                    push_ref(out, name, &lhs, file, RefRole::Write);
-                }
-            }
+    if node.kind() == "assignment"
+        && let Some(lhs) = node.child_by_field_name("lhs")
+        && lhs.kind() == "identifier"
+    {
+        let name = node_text(&lhs, bytes);
+        if name.len() >= MIN_REF_LEN {
+            push_ref(out, name, &lhs, file, RefRole::Write);
         }
     }
     for child in node.children(&mut node.walk()) {

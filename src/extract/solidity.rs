@@ -775,16 +775,10 @@ fn collect_type_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
                     "return_type_definition" => {
                         // Each parameter inside the return type definition is a return type.
                         for ret_param in child.children(&mut child.walk()) {
-                            if ret_param.kind() == "parameter" {
-                                if let Some(type_node) = ret_param.child_by_field_name("type") {
-                                    type_leaf(
-                                        &type_node,
-                                        bytes,
-                                        file,
-                                        TypeRefContext::ReturnType,
-                                        out,
-                                    );
-                                }
+                            if ret_param.kind() == "parameter"
+                                && let Some(type_node) = ret_param.child_by_field_name("type")
+                            {
+                                type_leaf(&type_node, bytes, file, TypeRefContext::ReturnType, out);
                             }
                         }
                     }
@@ -926,18 +920,18 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
         | "fallback_receive_definition" => {
             // Parameters: direct children of kind "parameter" with a "name" field.
             for child in node.children(&mut node.walk()) {
-                if child.kind() == "parameter" {
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        let name = node_text(&name_node, bytes).to_owned();
-                        if !name.is_empty() {
-                            push_binding(
-                                out,
-                                name,
-                                name_node.start_byte(),
-                                BindingKind::Param,
-                                scopes,
-                            );
-                        }
+                if child.kind() == "parameter"
+                    && let Some(name_node) = child.child_by_field_name("name")
+                {
+                    let name = node_text(&name_node, bytes).to_owned();
+                    if !name.is_empty() {
+                        push_binding(
+                            out,
+                            name,
+                            name_node.start_byte(),
+                            BindingKind::Param,
+                            scopes,
+                        );
                     }
                 }
             }
@@ -953,10 +947,10 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
                 let name = node_text(&name_node, bytes).to_owned();
                 if !name.is_empty() {
                     let intro = name_node.start_byte();
-                    if let Some(sid) = innermost_scope(intro, scopes) {
-                        if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                            push_binding(out, name, intro, BindingKind::Local, scopes);
-                        }
+                    if let Some(sid) = innermost_scope(intro, scopes)
+                        && matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block)
+                    {
+                        push_binding(out, name, intro, BindingKind::Local, scopes);
                     }
                 }
             }
@@ -972,10 +966,10 @@ fn collect_bindings_dfs(node: &Node, bytes: &[u8], scopes: &[Scope], out: &mut V
                     let name = node_text(&child, bytes).to_owned();
                     if !name.is_empty() {
                         let intro = child.start_byte();
-                        if let Some(sid) = innermost_scope(intro, scopes) {
-                            if matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block) {
-                                push_binding(out, name, intro, BindingKind::Local, scopes);
-                            }
+                        if let Some(sid) = innermost_scope(intro, scopes)
+                            && matches!(scopes[sid].kind, ScopeKind::Function | ScopeKind::Block)
+                        {
+                            push_binding(out, name, intro, BindingKind::Local, scopes);
                         }
                     }
                 } else {
@@ -1026,16 +1020,16 @@ fn collect_inheritance(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Refe
         "contract_declaration" | "interface_declaration" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "inheritance_specifier" {
-                    if let Some(ancestor) = child.child_by_field_name("ancestor") {
-                        super::push_ref(
-                            out,
-                            super::simple_type_name(node_text(&ancestor, bytes), "."),
-                            &ancestor,
-                            file,
-                            RefRole::IsImplementation,
-                        );
-                    }
+                if child.kind() == "inheritance_specifier"
+                    && let Some(ancestor) = child.child_by_field_name("ancestor")
+                {
+                    super::push_ref(
+                        out,
+                        super::simple_type_name(node_text(&ancestor, bytes), "."),
+                        &ancestor,
+                        file,
+                        RefRole::IsImplementation,
+                    );
                 }
             }
         }
@@ -1093,19 +1087,19 @@ fn is_non_read_position(node: &Node) -> bool {
                     // Call callee: `foo()` →
                     // (call_expression function: (expression (identifier)))
                     "call_expression" => {
-                        if let Some(fn_field) = grandparent.child_by_field_name("function") {
-                            if fn_field == parent {
-                                return true; // skip — already a Call ref
-                            }
+                        if let Some(fn_field) = grandparent.child_by_field_name("function")
+                            && fn_field == parent
+                        {
+                            return true; // skip — already a Call ref
                         }
                     }
                     // Assignment LHS: `x = 5` / `x += 1` →
                     // (assignment_expression left: (expression (identifier)) …)
                     "assignment_expression" | "augmented_assignment_expression" => {
-                        if let Some(left_field) = grandparent.child_by_field_name("left") {
-                            if left_field == parent {
-                                return true; // skip — handled by collect_write_references
-                            }
+                        if let Some(left_field) = grandparent.child_by_field_name("left")
+                            && left_field == parent
+                        {
+                            return true; // skip — handled by collect_write_references
                         }
                     }
                     _ => {}
@@ -1195,22 +1189,21 @@ fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec
     if matches!(
         node.kind(),
         "assignment_expression" | "augmented_assignment_expression"
-    ) {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            // The LHS is an `expression` wrapper in the Solidity grammar; peel it.
-            let bare = if lhs.kind() == "expression" {
-                // Single named child of the expression wrapper.
-                lhs.named_children(&mut lhs.walk()).next()
-            } else {
-                Some(lhs)
-            };
-            if let Some(bare_node) = bare {
-                if bare_node.kind() == "identifier" {
-                    let name = node_text(&bare_node, bytes);
-                    if name.len() >= MIN_REF_LEN {
-                        push_ref(out, name, &bare_node, file, RefRole::Write);
-                    }
-                }
+    ) && let Some(lhs) = node.child_by_field_name("left")
+    {
+        // The LHS is an `expression` wrapper in the Solidity grammar; peel it.
+        let bare = if lhs.kind() == "expression" {
+            // Single named child of the expression wrapper.
+            lhs.named_children(&mut lhs.walk()).next()
+        } else {
+            Some(lhs)
+        };
+        if let Some(bare_node) = bare
+            && bare_node.kind() == "identifier"
+        {
+            let name = node_text(&bare_node, bytes);
+            if name.len() >= MIN_REF_LEN {
+                push_ref(out, name, &bare_node, file, RefRole::Write);
             }
         }
     }

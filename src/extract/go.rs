@@ -540,14 +540,14 @@ fn collect_read_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<
 /// Note: `x := 5` is a `short_var_declaration` (a definition), NOT an
 /// `assignment_statement`, so it is correctly not emitted here.
 fn collect_write_references(node: &Node, bytes: &[u8], file: &str, out: &mut Vec<Reference>) {
-    if node.kind() == "assignment_statement" {
-        if let Some(lhs) = node.child_by_field_name("left") {
-            for child in lhs.children(&mut lhs.walk()) {
-                if child.kind() == "identifier" {
-                    let name = node_text(&child, bytes);
-                    if name.len() >= MIN_REF_LEN {
-                        push_ref(out, name, &child, file, RefRole::Write);
-                    }
+    if node.kind() == "assignment_statement"
+        && let Some(lhs) = node.child_by_field_name("left")
+    {
+        for child in lhs.children(&mut lhs.walk()) {
+            if child.kind() == "identifier" {
+                let name = node_text(&child, bytes);
+                if name.len() >= MIN_REF_LEN {
+                    push_ref(out, name, &child, file, RefRole::Write);
                 }
             }
         }
