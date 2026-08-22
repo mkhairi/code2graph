@@ -14,6 +14,7 @@
 //! [`ScopeGraphResolver`]: super::ScopeGraphResolver
 
 mod delta;
+mod hash;
 mod state;
 mod stitch;
 mod store;
@@ -21,6 +22,7 @@ mod subgraph;
 mod tracked;
 
 pub use delta::{FileChange, ScopeGraphDelta, ScopeSnapshotToken};
+pub(crate) use hash::{HashMap, HashSet};
 pub(crate) use stitch::{GlobalIndex, stitch};
 pub use store::IncrementalGraph;
 pub use subgraph::{FILE_SUBGRAPH_SCHEMA_VERSION, FileSubgraph};

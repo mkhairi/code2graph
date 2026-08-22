@@ -2,7 +2,7 @@
 
 //! Snapshot-lineage tracking for incremental scope-graph transitions.
 
-use std::collections::HashMap;
+use super::hash::HashMap;
 
 use crate::error::Result;
 use crate::graph::{CodeGraph, Edge, EdgeKey, EntryPoint, Symbol};
@@ -161,7 +161,7 @@ fn symbol_map(symbols: Vec<Symbol>) -> HashMap<SymbolId, Symbol> {
     // the shared namespace-only symbol a multi-file package/module emits in
     // each of its files — otherwise a diff built here could disagree with
     // which copy the cold `graph()` build keeps.
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for symbol in symbols {
         map.entry(symbol.id.clone()).or_insert(symbol);
     }

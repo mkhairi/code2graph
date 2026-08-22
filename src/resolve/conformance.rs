@@ -42,8 +42,8 @@
 //! When neither shape applies, this resolver simply emits nothing for that
 //! reference (recall is only ever *added*, never faked).
 
+use super::incremental::{HashMap, HashSet};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 
 use crate::graph::types::{
     CodeGraph, Confidence, Edge, FileFacts, Provenance, RefRole, Symbol, SymbolKind,
@@ -95,13 +95,13 @@ impl Resolver for ConformanceResolver {
             .flat_map(|f| f.symbols.iter().cloned())
             .collect();
 
-        let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut by_file: HashMap<&str, Vec<usize>> = HashMap::default();
         for (i, s) in symbols.iter().enumerate() {
             by_file.entry(s.file.as_str()).or_default().push(i);
         }
 
         // ── 2. type name → { member leaf → inherited member SymbolId } ────────
-        let mut members: HashMap<String, HashMap<String, SymbolId>> = HashMap::new();
+        let mut members: HashMap<String, HashMap<String, SymbolId>> = HashMap::default();
         for s in &symbols {
             if let Some((type_name, member)) = member_of_type(s) {
                 members
@@ -113,7 +113,7 @@ impl Resolver for ConformanceResolver {
         }
 
         // ── 3. type name → [supertype bare names] (insertion order preserved) ─
-        let mut supertypes: HashMap<String, Vec<String>> = HashMap::new();
+        let mut supertypes: HashMap<String, Vec<String>> = HashMap::default();
         for f in files.iter().copied() {
             for r in &f.references {
                 if r.role != RefRole::IsImplementation {
@@ -236,7 +236,7 @@ pub(crate) fn find_inherited(
     members: &HashMap<String, HashMap<String, SymbolId>>,
     supertypes: &HashMap<String, Vec<String>>,
 ) -> Option<SymbolId> {
-    let mut visited: HashSet<String> = HashSet::new();
+    let mut visited: HashSet<String> = HashSet::default();
     visited.insert(type_name.to_owned());
     let mut stack: Vec<String> = supertypes
         .get(type_name)

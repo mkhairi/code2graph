@@ -109,12 +109,18 @@ fn resolve_scope(inputs: ResolveCandidateInputs<'_>) -> Result<ResolvedCandidate
     // units are an ordinary cache miss, but malformed present data is corruption.
     check(inputs.deadline, inputs.cancellation)?;
     let mut store = IncrementalGraph::new();
-    for (path, subgraph) in &prior.subgraphs {
-        check(inputs.deadline, inputs.cancellation)?;
-        store
-            .try_upsert_subgraph(path.clone(), subgraph.clone())
-            .map_err(|error| CliError::Cache(error.to_string()))?;
-    }
+    // Restore the whole prior cache as one mutation. Per-file restores re-run
+    // the cross-file stitch once per file, which costs more than rebuilding the
+    // graph from scratch on any project that re-exports symbols.
+    check(inputs.deadline, inputs.cancellation)?;
+    store
+        .try_restore_subgraphs(
+            prior
+                .subgraphs
+                .iter()
+                .map(|(path, subgraph)| (path.clone(), subgraph.clone())),
+        )
+        .map_err(|error| CliError::Cache(error.to_string()))?;
     check(inputs.deadline, inputs.cancellation)?;
     if hydrated_paths != prior.file_paths {
         return fresh_scope(inputs);

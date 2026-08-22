@@ -149,7 +149,12 @@ fn candidate_paths<T: PackageSourcePath>(
     deadline: &Deadline,
     cancellation: &dyn Cancellation,
 ) -> Result<BTreeSet<PathBuf>> {
-    let mut candidates = BTreeSet::new();
+    // Collect the DIRECTORIES that could hold a manifest, then expand the
+    // manifest names once each. Expanding per file re-walked the same ancestors
+    // for every file under them and re-inserted every manifest name each time,
+    // which on a large tree dominated the whole call.
+    let mut directories: std::collections::HashSet<PathBuf, rustc_hash::FxBuildHasher> =
+        std::collections::HashSet::default();
     for file in files {
         deadline.check(cancellation)?;
         let mut directory = root
@@ -161,13 +166,23 @@ fn candidate_paths<T: PackageSourcePath>(
             if current.strip_prefix(root).is_err() {
                 break;
             }
-            for name in MANIFEST_NAMES {
-                candidates.insert(current.join(name));
+            let at_root = current == root;
+            // A directory already recorded had its whole ancestor chain recorded
+            // in the same climb, so there is nothing left to add above it.
+            if !directories.insert(current.clone()) {
+                break;
             }
-            if current == root {
+            if at_root {
                 break;
             }
             directory = current.parent().map(Path::to_path_buf);
+        }
+    }
+    let mut candidates = BTreeSet::new();
+    for directory in &directories {
+        deadline.check(cancellation)?;
+        for name in MANIFEST_NAMES {
+            candidates.insert(directory.join(name));
         }
     }
     Ok(candidates)

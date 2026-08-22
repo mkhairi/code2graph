@@ -2,7 +2,7 @@
 
 //! Private derived state for selective incremental cross-file stitching.
 
-use std::collections::{HashMap, HashSet};
+use super::hash::{HashMap, HashSet};
 
 use crate::graph::types::{Edge, RefRole, Symbol, SymbolKind};
 
@@ -107,7 +107,7 @@ impl PendingState {
     /// Return every installed reference whose result can be changed by `symbol`.
     /// This uses the same namespace/enclosing predicates as `resolve_pending`.
     pub(crate) fn affected_by_symbol(&self, symbol: &Symbol) -> HashSet<PendingRefId> {
-        let mut affected = HashSet::new();
+        let mut affected = HashSet::default();
         let domains: &[PendingDomain] = if symbol.kind == SymbolKind::Module {
             &[PendingDomain::Module]
         } else {

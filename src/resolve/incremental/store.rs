@@ -16,7 +16,7 @@
 //! [`ScopeGraphResolver`]: super::super::ScopeGraphResolver
 //! [`graph`]: IncrementalGraph::graph
 
-use std::collections::{HashMap, HashSet};
+use super::hash::{HashMap, HashSet};
 
 use crate::error::{CodegraphError, Result};
 use crate::graph::types::{CodeGraph, Edge, FileFacts, Symbol};
@@ -95,7 +95,7 @@ impl IncrementalGraph {
     /// An empty store.
     pub fn new() -> Self {
         Self {
-            files: HashMap::new(),
+            files: HashMap::default(),
             index: GlobalIndex::new(),
             pending_state: PendingState::default(),
         }
@@ -181,6 +181,26 @@ impl IncrementalGraph {
         Ok(())
     }
 
+    /// Atomically restore many persisted subgraphs as **one** mutation.
+    ///
+    /// Restoring a whole cache file-by-file re-runs the cross-file stitch once
+    /// per file, which is quadratic on any project that re-exports symbols.
+    /// Hydration knows its complete input set up front, so it commits the set
+    /// in a single bounded mutation and stitches once. Validation is unchanged:
+    /// every subgraph is checked before any state changes, and a single
+    /// malformed entry rejects the whole batch.
+    pub fn try_restore_subgraphs(
+        &mut self,
+        subgraphs: impl IntoIterator<Item = (String, FileSubgraph)>,
+    ) -> Result<()> {
+        let prepared = subgraphs
+            .into_iter()
+            .map(|(file, sub)| Self::prepare_restored_change(file, sub))
+            .collect::<Result<Vec<_>>>()?;
+        self.commit_prepared_bounded(prepared);
+        Ok(())
+    }
+
     /// Apply a checked, atomic group of file-fact changes.
     ///
     /// This is intentionally crate-internal: [`FileChange`] is a transition
@@ -209,7 +229,8 @@ impl IncrementalGraph {
     }
 
     fn prepare_changes(changes: &[FileChange<'_>]) -> Result<Vec<PreparedChange>> {
-        let mut targets = HashSet::with_capacity(changes.len());
+        let mut targets =
+            HashSet::with_capacity_and_hasher(changes.len(), rustc_hash::FxBuildHasher);
         for change in changes {
             let file = match change {
                 FileChange::Upsert(facts) => facts.file.as_str(),
@@ -306,7 +327,7 @@ impl IncrementalGraph {
                 }
             })
             .collect();
-        let mut affected = HashSet::new();
+        let mut affected = HashSet::default();
 
         // Select unchanged refs against BOTH sides before removing old records.
         for change in &changes {
@@ -434,7 +455,7 @@ impl IncrementalGraph {
         // package can span multiple files, each emitting the same
         // namespace-only package symbol. Keep the first occurrence in the
         // deterministic sorted-file-key order established above.
-        let mut seen_symbols = HashSet::new();
+        let mut seen_symbols = HashSet::default();
         for (_, sub) in entries {
             symbols.extend(
                 sub.symbols
@@ -493,7 +514,7 @@ mod tests {
     }
 
     fn counts<K: Eq + std::hash::Hash>(keys: impl IntoIterator<Item = K>) -> HashMap<K, usize> {
-        let mut counts = HashMap::new();
+        let mut counts = HashMap::default();
         for key in keys {
             *counts.entry(key).or_default() += 1;
         }

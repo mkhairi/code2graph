@@ -10,7 +10,7 @@
 //! lookup has a UNIQUE match — Tier-B never fakes precision (zero or ambiguous →
 //! no edge).
 
-use std::collections::{HashMap, HashSet};
+use super::hash::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::graph::types::{Edge, RefRole, Symbol, SymbolKind};
@@ -67,10 +67,10 @@ impl GlobalIndex {
     /// [`insert_symbols`]: GlobalIndex::insert_symbols
     pub(crate) fn new() -> Self {
         Self {
-            by_name: HashMap::new(),
-            modules_by_name: HashMap::new(),
-            types_by_name: HashMap::new(),
-            reexports_by_path: HashMap::new(),
+            by_name: HashMap::default(),
+            modules_by_name: HashMap::default(),
+            types_by_name: HashMap::default(),
+            reexports_by_path: HashMap::default(),
         }
     }
 
@@ -214,10 +214,10 @@ impl GlobalIndex {
         visited: &mut HashSet<Vec<String>>,
     ) -> HashSet<DefinitionInstance> {
         if !visited.insert(path.to_vec()) {
-            return HashSet::new();
+            return HashSet::default();
         }
         let Some((name, namespaces)) = path.split_last() else {
-            return HashSet::new();
+            return HashSet::default();
         };
         let candidates = if type_only {
             self.types_by_name.get(name)
@@ -251,7 +251,7 @@ impl GlobalIndex {
     ) -> Option<SymbolId> {
         let mut path = segs.to_vec();
         path.push(name.to_owned());
-        let resolved = self.resolved_path_instances(&path, type_only, &mut HashSet::new());
+        let resolved = self.resolved_path_instances(&path, type_only, &mut HashSet::default());
         let mut instances = resolved.iter();
         match (instances.next(), instances.next()) {
             (Some(only), None) => Some(only.id.clone()),

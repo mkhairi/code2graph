@@ -40,7 +40,7 @@
 //! first place (the extractor only captures a bare identifier receiver), so
 //! they are out of scope here too.
 
-use std::collections::HashMap;
+use super::incremental::HashMap;
 
 use crate::graph::types::{
     Binding, BindingKind, CodeGraph, Confidence, Edge, FileFacts, Provenance, RefRole, ScopeId,
@@ -67,13 +67,13 @@ impl Resolver for LocalTypedCallResolver {
             .flat_map(|f| f.symbols.iter().cloned())
             .collect();
 
-        let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut by_file: HashMap<&str, Vec<usize>> = HashMap::default();
         for (i, s) in symbols.iter().enumerate() {
             by_file.entry(s.file.as_str()).or_default().push(i);
         }
 
         // ── 2. type name → { member leaf → member SymbolId } ──────────────────
-        let mut members: HashMap<String, HashMap<String, SymbolId>> = HashMap::new();
+        let mut members: HashMap<String, HashMap<String, SymbolId>> = HashMap::default();
         for s in &symbols {
             if let Some((type_name, member)) = member_of_type(s) {
                 members
@@ -87,7 +87,7 @@ impl Resolver for LocalTypedCallResolver {
         // ── 3. type name → [supertype bare names] (insertion order preserved) ─
         // Mirrors ConformanceResolver's supertype map exactly, so a local's type
         // inherits members the same way a type-qualified call does.
-        let mut supertypes: HashMap<String, Vec<String>> = HashMap::new();
+        let mut supertypes: HashMap<String, Vec<String>> = HashMap::default();
         for f in files.iter().copied() {
             for r in &f.references {
                 if r.role != RefRole::IsImplementation {
@@ -119,7 +119,7 @@ impl Resolver for LocalTypedCallResolver {
         for f in files.iter().copied() {
             let file_syms = by_file.get(f.file.as_str());
 
-            let mut bindings_by_scope: HashMap<ScopeId, Vec<&Binding>> = HashMap::new();
+            let mut bindings_by_scope: HashMap<ScopeId, Vec<&Binding>> = HashMap::default();
             for b in &f.bindings {
                 bindings_by_scope.entry(b.scope).or_default().push(b);
             }

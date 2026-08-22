@@ -10,7 +10,7 @@
 //! attribution indexes only `f.symbols`, so the result is a true per-file
 //! subgraph that a future incremental store can build and cache in isolation.
 
-use std::collections::HashMap;
+use super::hash::HashMap;
 
 use crate::graph::types::{
     Binding, BindingKind, BindingTarget, Confidence, Edge, FileFacts, Occurrence, Provenance,
@@ -135,7 +135,7 @@ pub(crate) fn build_subgraph(f: &FileFacts) -> FileSubgraph {
 
     // Per-file binding index (scope → its bindings), built before the reference
     // loop so it borrows `f.bindings` independently of `f.references`.
-    let mut bindings_by_scope: HashMap<ScopeId, Vec<&Binding>> = HashMap::new();
+    let mut bindings_by_scope: HashMap<ScopeId, Vec<&Binding>> = HashMap::default();
     for b in &f.bindings {
         bindings_by_scope.entry(b.scope).or_default().push(b);
     }
@@ -146,7 +146,7 @@ pub(crate) fn build_subgraph(f: &FileFacts) -> FileSubgraph {
     // would re-split and re-filter the same string on every such reference. The
     // cache borrows `from_path` strings and segment slices from `f.bindings`,
     // which lives for the whole function — lifetimes are fine.
-    let mut import_segs_cache: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut import_segs_cache: HashMap<&str, Vec<&str>> = HashMap::default();
     for b in &f.bindings {
         if let BindingTarget::Import(fp) = &b.target {
             import_segs_cache
