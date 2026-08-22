@@ -319,7 +319,8 @@ fn matches_record(
         && *blake3::hash(&file.bytes).as_bytes() == record.content_hash)
 }
 
-fn cache_omission(omission: &crate::inventory::OmittedFile) -> CacheOmission {
+/// Maps a discovery omission to its recorded cache form.
+pub(crate) fn cache_omission(omission: &crate::inventory::OmittedFile) -> CacheOmission {
     CacheOmission {
         path: omission.path.as_str().to_owned(),
         reason: omission.reason.tag(),

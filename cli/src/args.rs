@@ -37,8 +37,18 @@ where
         {
             Ok(ParseOutcome::Display(error.to_string()))
         }
-        Err(error) => Err(CliError::Usage(error.to_string())),
+        Err(error) => Err(CliError::Usage(usage_message(&error))),
     }
+}
+
+/// clap renders its own `error: ` prefix, and the CLI's single error printer
+/// adds one too. Strip clap's so a usage failure reads `error: ...` once.
+fn usage_message(error: &clap::Error) -> String {
+    let rendered = error.to_string();
+    rendered
+        .strip_prefix("error: ")
+        .unwrap_or(&rendered)
+        .to_owned()
 }
 
 #[derive(Parser)]
@@ -143,11 +153,22 @@ enum RawCommand {
 #[derive(Subcommand)]
 enum CacheCommand {
     Path,
-    Status,
+    Status {
+        /// Report every cached project instead of the selected one.
+        #[arg(long)]
+        all: bool,
+    },
     Clear {
         #[arg(long)]
         all: bool,
     },
+    Prune,
+    Compact {
+        /// Compact every cached project instead of the selected one.
+        #[arg(long)]
+        all: bool,
+    },
+    Rebuild,
 }
 
 #[derive(Args)]
@@ -348,8 +369,11 @@ impl RawCli {
             RawCommand::Cache { op } => CommandRequest::Cache {
                 op: match op {
                     CacheCommand::Path => CacheOp::Path,
-                    CacheCommand::Status => CacheOp::Status,
+                    CacheCommand::Status { all } => CacheOp::Status { all },
                     CacheCommand::Clear { all } => CacheOp::Clear { all },
+                    CacheCommand::Compact { all } => CacheOp::Compact { all },
+                    CacheCommand::Rebuild => CacheOp::Rebuild,
+                    CacheCommand::Prune => CacheOp::Prune,
                 },
             },
         };

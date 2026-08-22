@@ -87,10 +87,18 @@ pub enum CommandRequest {
 pub enum CacheOp {
     /// Report this project's cache directory and database path.
     Path,
-    /// Report cache footprint and per-snapshot breakdown.
-    Status,
+    /// Report cache footprint and per-snapshot breakdown, or every cached
+    /// project's health with `all`.
+    Status { all: bool },
     /// Delete this project's cache, or every project's cache with `all`.
     Clear { all: bool },
+    /// Delete every cache that can no longer be used: one whose project root is
+    /// gone, and one written by an older schema that would be rebuilt anyway.
+    Prune,
+    /// Rewrite the cache database to return fragmentation to the filesystem.
+    Compact { all: bool },
+    /// Discard this project's cache and index it again from source.
+    Rebuild,
 }
 
 impl CommandRequest {

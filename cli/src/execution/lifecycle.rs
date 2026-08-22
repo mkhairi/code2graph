@@ -5,7 +5,8 @@ use code2graph_query::{EdgeFilter, GraphIndex, GraphPage, GraphRead};
 
 use crate::cache::{
     ActiveSnapshotMetadata, CacheCompleteness, CacheError, CacheGraphRead, CacheLocation,
-    CacheStore, LoadedSnapshot, ResolverCacheTier,
+    CacheStore, CompatibilityFingerprint, LanguageFeatureFingerprint, LoadedSnapshot,
+    PackageFingerprint, ResolverCacheTier,
 };
 use crate::commands::{
     DefinitionCommandRequest, DiffImpactCommandRequest, ImpactCommandRequest,
@@ -14,10 +15,13 @@ use crate::commands::{
     execute_diff_impact, execute_impact, execute_imports, execute_module_deps, execute_references,
     execute_relations, execute_symbols,
 };
-use crate::inventory::{OmissionImpact, discover_sources_checked};
+use crate::inventory::{
+    MaterializedCandidate, OmissionImpact, discover_sources_checked, materialize_candidate_checked,
+};
+use crate::package_assignment::assign_packages_checked;
 use crate::refresh::{
-    PrepareCandidateInputs, PreparedRefreshCandidate, prepare_and_publish,
-    prepare_refresh_candidate,
+    PrepareCandidateInputs, PreparedRefreshCandidate, apply_metadata_budgets, cache_omission,
+    prepare_and_publish, prepare_refresh_candidate,
 };
 use crate::request::{CacheOp, CliRequest, CommandRequest};
 use crate::result::{
@@ -435,7 +439,11 @@ fn execute_cache(
                 exists: location.database_path.exists(),
             }
         }
-        CacheOp::Status => {
+        CacheOp::Status { all: true } => {
+            let projects_root = cache_projects_root(context)?;
+            survey_projects(&projects_root)?
+        }
+        CacheOp::Status { all: false } => {
             let deadline = deadline_before_selection(&request, context)?;
             let selection = select_project(&request, &context.cwd)?;
             let location = cache_location(context, &selection)?;
@@ -457,11 +465,14 @@ fn execute_cache(
             } else {
                 Vec::new()
             };
+            let (schema_version, reclaimable_bytes) = database_health(&location.database_path);
             crate::CacheDetail::Status {
                 cache_dir: location.directory.display().to_string(),
                 database_path: location.database_path.display().to_string(),
                 exists,
                 size_bytes,
+                reclaimable_bytes,
+                schema_version,
                 snapshots,
             }
         }
@@ -500,11 +511,392 @@ fn execute_cache(
                 freed_bytes: freed,
             }
         }
+        CacheOp::Rebuild => {
+            // Discard first, then index: `--force` re-extracts but keeps the
+            // database, so it cannot recover a cache whose file itself is the
+            // problem. This is the "start over" path.
+            let selection = select_project(&request, &context.cwd)?;
+            let location = cache_location(context, &selection)?;
+            let projects_root = cache_projects_root(context)?;
+            let discarded = if location.directory.exists() {
+                if location.directory.parent() != Some(projects_root.as_path()) {
+                    return Err(CliError::Cache(
+                        "refusing to remove a cache directory outside the cache root".into(),
+                    ));
+                }
+                let freed = dir_size(&location.directory);
+                std::fs::remove_dir_all(&location.directory).map_err(|error| {
+                    CliError::Cache(format!("failed to remove cache directory: {error}"))
+                })?;
+                freed
+            } else {
+                0
+            };
+            let mut index = request.clone();
+            index.command = CommandRequest::Index {
+                path: None,
+                force: false,
+                trust_mtime: false,
+            };
+            let CommandOutput::Index(envelope) = execute_index(index, context)? else {
+                return Err(CliError::Fatal("rebuild did not produce an index".into()));
+            };
+            crate::CacheDetail::Rebuild {
+                discarded_bytes: discarded,
+                indexed_files: envelope.results.inventory_file_count,
+                size_bytes: dir_size(&location.directory),
+            }
+        }
+        CacheOp::Prune => {
+            let projects_root = cache_projects_root(context)?;
+            prune_projects(&projects_root)?
+        }
+        CacheOp::Compact { all } => {
+            let directories = if all {
+                project_directories(&cache_projects_root(context)?)?
+            } else {
+                let selection = select_project(&request, &context.cwd)?;
+                vec![cache_location(context, &selection)?.directory]
+            };
+            let mut compacted: u64 = 0;
+            let mut freed: u64 = 0;
+            for directory in directories {
+                let database = directory.join(CACHE_DATABASE_NAME);
+                if !database.is_file() {
+                    continue;
+                }
+                let before = file_len(&database);
+                if compact_database(&database) {
+                    compacted += 1;
+                    freed = freed.saturating_add(before.saturating_sub(file_len(&database)));
+                }
+            }
+            crate::CacheDetail::Compact {
+                compacted_projects: compacted,
+                freed_bytes: freed,
+            }
+        }
     };
     Ok(CommandOutput::Cache(crate::CacheReport {
         status: crate::OutputStatus::Ok,
         detail,
     }))
+}
+
+/// How long a cache root goes between automatic prunes.
+///
+/// Long enough that the check costs one `stat` on essentially every command,
+/// short enough that dead caches never accumulate for months. The work itself
+/// only ever removes caches that can no longer serve a query.
+const AUTO_PRUNE_INTERVAL_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+
+/// Records when the cache root was last pruned. Its contents are the timestamp,
+/// so the decision never depends on filesystem mtime granularity.
+const AUTO_PRUNE_STAMP: &str = ".last-prune";
+
+/// Set to `off` to disable the periodic automatic prune entirely.
+const AUTO_PRUNE_ENV: &str = "CODE2GRAPH_AUTO_PRUNE";
+
+/// Removes unusable caches at most once per [`AUTO_PRUNE_INTERVAL_NS`].
+///
+/// Called only from `index`, never from a query: indexing is already the
+/// expensive, deliberate operation, and it is the one that grows the cache root.
+/// When the interval has not elapsed the whole check is a single file read.
+///
+/// Best-effort throughout — a cache root that cannot be read or stamped leaves
+/// indexing unaffected, because pruning is hygiene, not part of the result.
+fn auto_prune(context: &ExecutionContext<'_>) {
+    if std::env::var(AUTO_PRUNE_ENV).is_ok_and(|value| value.eq_ignore_ascii_case("off")) {
+        return;
+    }
+    let Ok(projects_root) = cache_projects_root(context) else {
+        return;
+    };
+    if !projects_root.is_dir() {
+        return;
+    }
+    let Ok(now) = context.clock.unix_time_ns() else {
+        return;
+    };
+    let stamp = projects_root.join(AUTO_PRUNE_STAMP);
+    let last = std::fs::read_to_string(&stamp)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    if last.is_some_and(|last| now.saturating_sub(last) < AUTO_PRUNE_INTERVAL_NS) {
+        return;
+    }
+    // Stamp before pruning: a prune that fails halfway must not make every later
+    // command retry the same scan.
+    if std::fs::write(&stamp, now.to_string()).is_err() {
+        return;
+    }
+    if let Ok(crate::CacheDetail::Prune {
+        removed_orphaned,
+        removed_outdated,
+        freed_bytes,
+        ..
+    }) = prune_projects(&projects_root)
+        && removed_orphaned + removed_outdated > 0
+    {
+        eprintln!(
+            "[code2graph] pruned {removed_orphaned} orphaned and {removed_outdated} outdated cache(s), freed {freed_bytes} bytes"
+        );
+    }
+}
+
+/// File name of a project cache's SQLite database inside its cache directory.
+const CACHE_DATABASE_NAME: &str = "cache.sqlite3";
+
+/// Lists every project-cache directory under the shared cache root.
+fn project_directories(projects_root: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    if !projects_root.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(projects_root)
+        .map_err(|error| CliError::Cache(format!("failed to read cache root: {error}")))?;
+    let mut directories = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| CliError::Cache(format!("failed to read cache entry: {error}")))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| CliError::Cache(format!("failed to inspect cache entry: {error}")))?;
+        if file_type.is_dir() {
+            directories.push(entry.path());
+        }
+    }
+    directories.sort();
+    Ok(directories)
+}
+
+/// Reads a cache database's layout version and its unreturned free space.
+///
+/// Both answer the question "is this cache healthy": a version below the current
+/// one means the next command rebuilds it, and a large reclaimable figure means
+/// the file is holding pages that `cache compact` gives back.
+fn database_health(database: &std::path::Path) -> (Option<i64>, u64) {
+    let Ok(connection) =
+        rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return (None, 0);
+    };
+    let version: Option<i64> = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .ok();
+    let free: Option<i64> = connection
+        .pragma_query_value(None, "freelist_count", |row| row.get(0))
+        .ok();
+    let page: Option<i64> = connection
+        .pragma_query_value(None, "page_size", |row| row.get(0))
+        .ok();
+    let reclaimable = match (free, page) {
+        (Some(free), Some(page)) if free > 0 && page > 0 => u64::try_from(free)
+            .unwrap_or(0)
+            .saturating_mul(u64::try_from(page).unwrap_or(0)),
+        _ => 0,
+    };
+    (version, reclaimable)
+}
+
+/// Rewrites a cache database in place so fragmentation returns to the
+/// filesystem. Best-effort: a locked or unreadable cache is skipped, never fatal.
+fn compact_database(database: &std::path::Path) -> bool {
+    let Ok(connection) = rusqlite::Connection::open(database) else {
+        return false;
+    };
+    connection.execute_batch("VACUUM").is_ok()
+}
+
+/// Reports every cached project's footprint and whether it can still be used.
+fn survey_projects(projects_root: &std::path::Path) -> Result<crate::CacheDetail> {
+    let mut projects = Vec::new();
+    let mut total_size: u64 = 0;
+    let mut total_reclaimable: u64 = 0;
+    for directory in project_directories(projects_root)? {
+        let database = directory.join(CACHE_DATABASE_NAME);
+        let size_bytes = dir_size(&directory);
+        let (schema_version, reclaimable_bytes) = database_health(&database);
+        let root = recorded_root(&database);
+        let state = match schema_version {
+            _ if !database.is_file() => crate::CacheProjectState::Orphaned,
+            Some(version) if version < crate::cache::SCHEMA_VERSION => {
+                crate::CacheProjectState::Outdated
+            }
+            Some(version) if version > crate::cache::SCHEMA_VERSION => {
+                crate::CacheProjectState::Newer
+            }
+            Some(_) => match root.as_deref() {
+                Some(root) if std::path::Path::new(root).is_dir() => {
+                    crate::CacheProjectState::Current
+                }
+                _ => crate::CacheProjectState::Orphaned,
+            },
+            None => crate::CacheProjectState::Orphaned,
+        };
+        total_size = total_size.saturating_add(size_bytes);
+        total_reclaimable = total_reclaimable.saturating_add(reclaimable_bytes);
+        projects.push(crate::CacheProjectOutput {
+            root,
+            cache_dir: directory.display().to_string(),
+            size_bytes,
+            reclaimable_bytes,
+            schema_version,
+            state,
+        });
+    }
+    // Largest first: the caches worth acting on are the ones at the top.
+    projects.sort_by_key(|project| std::cmp::Reverse(project.size_bytes));
+    Ok(crate::CacheDetail::StatusAll {
+        cache_dir: projects_root.display().to_string(),
+        projects,
+        total_size_bytes: total_size,
+        total_reclaimable_bytes: total_reclaimable,
+    })
+}
+
+/// The project root a cache was built for, as recorded in its own metadata.
+fn recorded_root(database: &std::path::Path) -> Option<String> {
+    let connection =
+        rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    let bytes: Vec<u8> = connection
+        .query_row("SELECT canonical_root FROM meta", [], |row| row.get(0))
+        .ok()?;
+    Some(native_path_from_bytes(&bytes)?.display().to_string())
+}
+
+/// Removes every project cache that can no longer serve a query, and reports
+/// what it kept.
+///
+/// Two kinds are unusable. An ORPHANED cache names a project root that no longer
+/// exists — a deleted checkout or, most often, a temporary directory — and
+/// nothing will ever open it again. An OUTDATED cache was written by an older
+/// schema, so the next command on that project discards and rebuilds it anyway.
+/// Neither is recoverable state: everything in a cache is derived from source.
+///
+/// A cache stamped NEWER than this binary is kept untouched; it belongs to a
+/// newer build that can still read it.
+fn prune_projects(projects_root: &std::path::Path) -> Result<crate::CacheDetail> {
+    let mut orphaned: u64 = 0;
+    let mut outdated: u64 = 0;
+    let mut kept: u64 = 0;
+    let mut freed: u64 = 0;
+    if !projects_root.exists() {
+        return Ok(crate::CacheDetail::Prune {
+            removed_orphaned: orphaned,
+            removed_outdated: outdated,
+            kept_projects: kept,
+            freed_bytes: freed,
+        });
+    }
+    let entries = std::fs::read_dir(projects_root)
+        .map_err(|error| CliError::Cache(format!("failed to read cache root: {error}")))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| CliError::Cache(format!("failed to read cache entry: {error}")))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| CliError::Cache(format!("failed to inspect cache entry: {error}")))?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        let reason = prune_reason(&path);
+        let Some(reason) = reason else {
+            kept += 1;
+            continue;
+        };
+        freed = freed.saturating_add(dir_size(&path));
+        std::fs::remove_dir_all(&path).map_err(|error| {
+            CliError::Cache(format!("failed to remove cache directory: {error}"))
+        })?;
+        match reason {
+            PruneReason::Orphaned => orphaned += 1,
+            PruneReason::Outdated => outdated += 1,
+        }
+    }
+    Ok(crate::CacheDetail::Prune {
+        removed_orphaned: orphaned,
+        removed_outdated: outdated,
+        kept_projects: kept,
+        freed_bytes: freed,
+    })
+}
+
+/// Inverse of the cache's native path encoding, for reading a recorded root back.
+fn native_path_from_bytes(bytes: &[u8]) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        if bytes.len() % 2 != 0 {
+            return None;
+        }
+        let wide: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        Some(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            &wide,
+        )))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::str::from_utf8(bytes)
+            .ok()
+            .map(std::path::PathBuf::from)
+    }
+}
+
+enum PruneReason {
+    Orphaned,
+    Outdated,
+}
+
+/// Why one project-cache directory is unusable, or `None` to keep it.
+///
+/// A directory that cannot be inspected at all — missing database, unreadable
+/// metadata — counts as orphaned: nothing can open it, so nothing loses state
+/// when it goes.
+fn prune_reason(directory: &std::path::Path) -> Option<PruneReason> {
+    let database = directory.join("cache.sqlite3");
+    if !database.is_file() {
+        return Some(PruneReason::Orphaned);
+    }
+    let Ok(connection) = rusqlite::Connection::open_with_flags(
+        &database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return Some(PruneReason::Orphaned);
+    };
+    let version: Option<i64> = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .ok();
+    match version {
+        Some(version) if version < crate::cache::SCHEMA_VERSION => {
+            return Some(PruneReason::Outdated);
+        }
+        None => return Some(PruneReason::Orphaned),
+        Some(_) => {}
+    }
+    let root: Option<Vec<u8>> = connection
+        .query_row("SELECT canonical_root FROM meta", [], |row| row.get(0))
+        .ok();
+    let Some(root) = root else {
+        return Some(PruneReason::Orphaned);
+    };
+    let Some(root) = native_path_from_bytes(&root) else {
+        return Some(PruneReason::Orphaned);
+    };
+    if root.is_dir() {
+        None
+    } else {
+        Some(PruneReason::Orphaned)
+    }
 }
 
 /// The `<base>/projects` directory shared by every project cache.
@@ -724,6 +1116,7 @@ fn execute_query_backend(
                 metadata,
                 &request,
                 &selection,
+                CurrencyCheck::Metadata,
                 &deadline,
                 execution.cancellation,
             )?,
@@ -805,28 +1198,73 @@ fn active_metadata(
         .map_err(Into::into)
 }
 
+/// How strictly a cached source set is checked against the working tree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CurrencyCheck {
+    /// Size and mtime only. Used by read-only commands, which never widen the
+    /// guarantee an existing snapshot already carries.
+    Metadata,
+    /// Size, mtime, and a blake3 comparison of every source's bytes against the
+    /// stored content hash. `index` is the explicit correctness command, so its
+    /// reuse decision must match the content-hash standard a refresh applies.
+    Content,
+}
+
 fn cached_sources_are_current(
     store: &CacheStore,
     metadata: &ActiveSnapshotMetadata,
     request: &CliRequest,
     selection: &crate::ProjectSelection,
+    check_depth: CurrencyCheck,
     deadline: &Deadline,
     cancellation: &dyn crate::Cancellation,
 ) -> Result<bool> {
-    let discovery = discover_sources_checked(
+    let mut discovery = discover_sources_checked(
         selection,
         &request.global.limits,
         request.global.include_hidden,
         deadline,
         cancellation,
     )?;
-    // A discovery-level omission that shrinks the source set (e.g. a metadata
-    // budget or an oversized file) still forces a refresh: it changes which
-    // sources exist, not merely which ones extracted.
-    if discovery
+    apply_metadata_budgets(&mut discovery, &request.global.limits);
+    // A snapshot stays reusable only while the inputs that define cache
+    // compatibility still hash the same. Source bytes are checked below; the
+    // enabled language set and the package manifests are not sources at all, so
+    // a snapshot built under a different manifest must never be served as a hit.
+    let packages = assign_packages_checked(
+        &selection.canonical_root,
+        &discovery.candidates,
+        request.global.limits.max_file_bytes,
+        deadline,
+        cancellation,
+    )?;
+    let language_fingerprint = LanguageFeatureFingerprint::current();
+    let package_fingerprint = PackageFingerprint::from_selection(
+        packages.manifest_fingerprint_records(),
+        packages.assignment_fingerprint_records(),
+    );
+    if metadata.compatibility.id
+        != CompatibilityFingerprint::new(language_fingerprint, package_fingerprint)
+    {
+        return Ok(false);
+    }
+    // A discovery-level omission that shrinks the source set (a metadata budget
+    // or an oversized file) matters only when it DIFFERS from the one the
+    // snapshot recorded. Treating any such omission as a refresh trigger means
+    // a project holding one oversized vendored file can never reuse its cache:
+    // every query and index re-extracts the whole tree.
+    let current_omissions: Vec<_> = discovery
         .omitted
         .iter()
-        .any(|omission| omission.impact == OmissionImpact::IncompleteSourceSet)
+        .filter(|omission| omission.impact == OmissionImpact::IncompleteSourceSet)
+        .map(cache_omission)
+        .collect();
+    // The reverse direction — a recorded omission that no longer applies —
+    // needs no check here: the file reappears as a discovered source and the
+    // inventory count below stops balancing.
+    if current_omissions
+        .iter()
+        .any(|omission| !metadata.omissions.contains(omission))
     {
         return Ok(false);
     }
@@ -852,13 +1290,35 @@ fn cached_sources_are_current(
         .iter()
         .filter(|candidate| candidate.language.is_some())
         .collect();
-    if sources.len() as u64 != metadata.inventory_file_count + omission_paths.len() as u64 {
+    // Only EXTRACTION omissions belong in this count. A discovery-level
+    // omission (oversized file, metadata budget) never became a candidate, so
+    // it is absent from `sources`; adding it here made the totals disagree by
+    // exactly the number of such files, and any project holding one could never
+    // reuse its cache. Extraction omissions are the recorded ones that discovery
+    // still lists as sources.
+    let source_paths: std::collections::HashSet<&str> = sources
+        .iter()
+        .map(|candidate| candidate.path.as_str())
+        .collect();
+    let extraction_omissions = omission_paths
+        .iter()
+        .filter(|path| source_paths.contains(*path))
+        .count();
+    if sources.len() as u64 != metadata.inventory_file_count + extraction_omissions as u64 {
         return Ok(false);
     }
     let cached_by_path: std::collections::HashMap<&str, _> = cached
         .iter()
         .map(|file| (file.path.as_str(), file))
         .collect();
+    // Content verification reads the stored hashes once; a metadata-only check
+    // never touches them, so read-only commands keep their single-query cost.
+    let content_hashes = match check_depth {
+        CurrencyCheck::Metadata => None,
+        CurrencyCheck::Content => {
+            Some(store.candidate_file_hashes(metadata.candidate_id, deadline)?)
+        }
+    };
     for candidate in sources {
         match cached_by_path.get(candidate.path.as_str()) {
             // A successfully-extracted file: it must be byte-for-byte unchanged.
@@ -870,6 +1330,24 @@ fn cached_sources_are_current(
                     && candidate.mtime == cached.mtime;
                 if !unchanged {
                     return Ok(false);
+                }
+                if let Some(hashes) = content_hashes.as_ref() {
+                    deadline.check(cancellation)?;
+                    let Some(expected) = hashes.get(candidate.path.as_str()) else {
+                        return Ok(false);
+                    };
+                    let MaterializedCandidate::File(file) = materialize_candidate_checked(
+                        candidate,
+                        &request.global.limits,
+                        deadline,
+                        cancellation,
+                    )?
+                    else {
+                        return Ok(false);
+                    };
+                    if blake3::hash(&file.bytes).as_bytes() != expected {
+                        return Ok(false);
+                    }
                 }
             }
             // A file that failed extraction last time: its bytes are not tracked
@@ -963,7 +1441,46 @@ fn execute_index(request: CliRequest, context: &ExecutionContext<'_>) -> Result<
 
     let location = cache_location(context, &selection)?;
     let store = CacheStore::open_writable(&location, &selection.canonical_root, &deadline)?;
+    // Placed before the reuse check so it covers both index paths: a project
+    // whose sources never change would otherwise never sweep the cache root.
+    auto_prune(context);
     let tier = ResolverCacheTier::from(request.global.tier);
+    // An unchanged source set already has a published graph for this tier.
+    // Re-resolving it rebuilds every cross-file edge to reproduce the snapshot
+    // byte-for-byte, so reuse it instead. `--force` still refreshes, and
+    // `--trust-mtime` relaxes the check to the same size/mtime standard it
+    // relaxes extraction to.
+    if !*force
+        && let Some(metadata) =
+            active_metadata(&store, tier, request.global.allow_partial, &deadline)?
+        && cached_sources_are_current(
+            &store,
+            &metadata,
+            &request,
+            &selection,
+            if *trust_mtime {
+                CurrencyCheck::Metadata
+            } else {
+                CurrencyCheck::Content
+            },
+            &deadline,
+            context.cancellation,
+        )?
+    {
+        let loaded = loaded_from_metadata(
+            selection.clone(),
+            metadata,
+            request.global.tier,
+            Freshness::Fresh,
+            CacheDisposition::Hit,
+        );
+        return Ok(CommandOutput::Index(unchanged_index_envelope(
+            &selection,
+            &loaded.snapshot,
+            request.global.tier,
+            store.recovery_diagnostic(),
+        )));
+    }
     let prior = refresh_prior(&store, tier, request.global.allow_partial, &deadline)?;
     let published = prepare_and_publish(
         &store,
@@ -1048,6 +1565,7 @@ fn execute_status(request: CliRequest, context: &ExecutionContext<'_>) -> Result
             &metadata,
             &request,
             &selection,
+            CurrencyCheck::Metadata,
             &deadline,
             context.cancellation,
         )?
@@ -1282,6 +1800,38 @@ fn index_envelope(
     envelope
 }
 
+/// Envelope for an `index` that reused an already-current snapshot. Every
+/// refresh counter is zero because no file was hashed, extracted, or removed.
+fn unchanged_index_envelope(
+    selection: &crate::ProjectSelection,
+    snapshot: &LoadedSnapshot,
+    tier: crate::ResolverTier,
+    cache_recovery: Option<String>,
+) -> OutputEnvelope<IndexOutput> {
+    let mut envelope = OutputEnvelope::new(
+        success_status(snapshot.completeness, Freshness::Fresh),
+        IndexOutput::from_loaded_snapshot(
+            snapshot,
+            tier,
+            0,
+            0,
+            0,
+            0,
+            PlanDecisionCountsOutput::default(),
+        ),
+    );
+    let mut project = project_output(
+        selection,
+        snapshot,
+        tier,
+        Freshness::Fresh,
+        CacheDisposition::Hit,
+    );
+    project.cache_recovery = cache_recovery;
+    envelope.project = Some(project);
+    envelope
+}
+
 fn status_envelope(
     request: &CliRequest,
     selection: &crate::ProjectSelection,
@@ -1509,6 +2059,27 @@ mod tests {
         (temp, root, cache)
     }
 
+    /// Counts project-cache directories, ignoring the auto-prune stamp file.
+    fn cache_dir_count(projects_root: &std::path::Path) -> usize {
+        fs::read_dir(projects_root)
+            .expect("projects")
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .expect("entry")
+                    .file_type()
+                    .expect("file type")
+                    .is_dir()
+            })
+            .count()
+    }
+
+    fn partial_index_request() -> CliRequest {
+        let mut request = index_request(false);
+        request.global.allow_partial = true;
+        request
+    }
+
     fn index_request(no_cache: bool) -> CliRequest {
         CliRequest {
             global: GlobalOptions {
@@ -1627,7 +2198,58 @@ mod tests {
         assert_eq!(loaded.project.tier, ResolverTier::Scope);
         assert_eq!(loaded.snapshot.tier_graphs.len(), 1);
         assert_eq!(loaded.snapshot.tier_graphs[0].0, ResolverCacheTier::Scope);
-        assert_eq!(clock.0.load(Ordering::SeqCst), 3);
+        // Two indexes and one query take a timestamp each; the two indexes also
+        // consult the clock to decide whether the cache root is due a prune.
+        assert_eq!(clock.0.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn index_reuses_an_unchanged_snapshot_and_refreshes_after_an_edit() {
+        let (_temp, root, cache) = fixture();
+        let cancellation = NeverCancelled;
+        let clock = FixedClock;
+        let context = context(&root, &cache, &cancellation, &clock);
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(root.join("src/a.rs"), "pub fn helper() {}\n").expect("source");
+
+        let CommandOutput::Index(first) =
+            execute(partial_index_request(), &context).expect("first index")
+        else {
+            panic!("index output")
+        };
+        assert_eq!(
+            first.project.expect("project").cache,
+            CacheDisposition::Miss
+        );
+
+        // Nothing moved: the published graph is reused verbatim, so no file is
+        // hashed for extraction, extracted, or removed, and no refresh attempt runs.
+        let CommandOutput::Index(reused) =
+            execute(partial_index_request(), &context).expect("reusing index")
+        else {
+            panic!("index output")
+        };
+        assert_eq!(
+            reused.project.expect("project").cache,
+            CacheDisposition::Hit
+        );
+        assert_eq!(reused.results.changed, 0);
+        assert_eq!(reused.results.deleted, 0);
+        assert_eq!(reused.results.attempts, 0);
+        assert_eq!(
+            reused.results.plan_decisions,
+            PlanDecisionCountsOutput::default()
+        );
+        assert_eq!(reused.results.snapshot, first.results.snapshot);
+
+        // A source set that moved must still refresh into a different snapshot.
+        fs::write(root.join("src/b.rs"), "pub fn added() {}\n").expect("added source");
+        let CommandOutput::Index(refreshed) =
+            execute(partial_index_request(), &context).expect("refresh after a new source")
+        else {
+            panic!("index output")
+        };
+        assert_ne!(refreshed.results.snapshot, first.results.snapshot);
     }
 
     #[test]
@@ -1883,7 +2505,7 @@ mod tests {
         execute(index, &context).expect("index");
 
         let CommandOutput::Cache(report) =
-            execute(cache_request(CacheOp::Status), &context).expect("cache status")
+            execute(cache_request(CacheOp::Status { all: false }), &context).expect("cache status")
         else {
             panic!("cache output")
         };
@@ -1946,6 +2568,148 @@ mod tests {
     }
 
     #[test]
+    fn cache_rebuild_discards_the_database_and_indexes_again() {
+        let (_temp, root, cache) = fixture();
+        let cancellation = NeverCancelled;
+        let clock = FixedClock;
+        let context = context(&root, &cache, &cancellation, &clock);
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(root.join("src/a.rs"), "pub fn run() {}\n").expect("source");
+        let CommandOutput::Index(first) =
+            execute(partial_index_request(), &context).expect("index")
+        else {
+            panic!("index output")
+        };
+
+        let mut rebuild = cache_request(CacheOp::Rebuild);
+        rebuild.global.allow_partial = true;
+        let CommandOutput::Cache(report) = execute(rebuild, &context).expect("rebuild") else {
+            panic!("cache output")
+        };
+        let crate::CacheDetail::Rebuild {
+            discarded_bytes,
+            indexed_files,
+            size_bytes,
+        } = report.detail
+        else {
+            panic!("rebuild detail")
+        };
+        assert!(discarded_bytes > 0, "an existing cache was discarded");
+        // The rebuild indexes the same source set the discarded cache held.
+        assert_eq!(indexed_files, first.results.inventory_file_count);
+        assert!(size_bytes > 0, "a fresh cache was written");
+    }
+
+    #[test]
+    fn indexing_prunes_dead_caches_at_most_once_per_interval() {
+        // A clock well past one interval, so the stamp can be aged backwards.
+        struct LateClock;
+        impl Clock for LateClock {
+            fn unix_time_ns(&self) -> Result<u64> {
+                Ok(AUTO_PRUNE_INTERVAL_NS * 3)
+            }
+        }
+
+        let temp = tempdir().expect("fixture");
+        let cache = temp.path().join("cache");
+        let cancellation = NeverCancelled;
+        let clock = LateClock;
+        for name in ["live", "deleted"] {
+            let root = temp.path().join(name);
+            fs::create_dir(&root).expect("project");
+            fs::write(root.join("a.rs"), "pub fn run() {}\n").expect("source");
+            let context = context(&root, &cache, &cancellation, &clock);
+            execute(partial_index_request(), &context).expect("index");
+        }
+        let projects_root = cache.join("projects");
+        let caches = || cache_dir_count(&projects_root);
+        assert_eq!(caches(), 2);
+        // The first index of a fresh cache root already stamps it, so age the
+        // stamp whenever the next index is expected to sweep.
+        let age_stamp = || {
+            fs::write(projects_root.join(AUTO_PRUNE_STAMP), "0").expect("age the stamp");
+        };
+        assert!(projects_root.join(AUTO_PRUNE_STAMP).is_file());
+        fs::remove_dir_all(temp.path().join("deleted")).expect("remove project");
+
+        // Indexing the surviving project sweeps the dead cache away.
+        let live = context(&temp.path().join("live"), &cache, &cancellation, &clock);
+        age_stamp();
+        execute(partial_index_request(), &live).expect("index after deletion");
+        assert_eq!(caches(), 1);
+
+        // A second dead cache inside the same interval is left alone: the check
+        // is a stamp read, not a scan.
+        let other = temp.path().join("other");
+        fs::create_dir(&other).expect("project");
+        fs::write(other.join("a.rs"), "pub fn run() {}\n").expect("source");
+        let context = context(&other, &cache, &cancellation, &clock);
+        execute(partial_index_request(), &context).expect("index other");
+        fs::remove_dir_all(&other).expect("remove other");
+        execute(partial_index_request(), &live).expect("index within interval");
+        assert_eq!(caches(), 2);
+
+        // Once the interval has elapsed, the next index sweeps again.
+        age_stamp();
+        execute(partial_index_request(), &live).expect("index after interval");
+        assert_eq!(caches(), 1);
+    }
+
+    #[test]
+    fn cache_prune_removes_orphaned_and_outdated_caches_and_keeps_the_rest() {
+        let temp = tempdir().expect("fixture");
+        let cache = temp.path().join("cache");
+        let cancellation = NeverCancelled;
+        let clock = FixedClock;
+        for name in ["live", "deleted", "stale"] {
+            let root = temp.path().join(name);
+            fs::create_dir(&root).expect("project");
+            fs::write(root.join("a.rs"), "pub fn run() {}\n").expect("source");
+            let context = context(&root, &cache, &cancellation, &clock);
+            let mut index = index_request(false);
+            index.global.allow_partial = true;
+            execute(index, &context).expect("index");
+        }
+        let projects_root = cache.join("projects");
+        assert_eq!(cache_dir_count(&projects_root), 3);
+
+        // One project root disappears; one cache is left on an older schema.
+        fs::remove_dir_all(temp.path().join("deleted")).expect("remove project");
+        let stale_key = crate::cache::CacheLocation::for_project(
+            Some(cache.as_path()),
+            &temp.path().join("stale"),
+        )
+        .expect("stale location");
+        let connection =
+            rusqlite::Connection::open(&stale_key.database_path).expect("open stale cache");
+        connection
+            .pragma_update(None, "user_version", crate::cache::SCHEMA_VERSION - 1)
+            .expect("downgrade");
+        drop(connection);
+
+        let context = context(&temp.path().join("live"), &cache, &cancellation, &clock);
+        let CommandOutput::Cache(report) =
+            execute(cache_request(CacheOp::Prune), &context).expect("prune")
+        else {
+            panic!("cache output")
+        };
+        let crate::CacheDetail::Prune {
+            removed_orphaned,
+            removed_outdated,
+            kept_projects,
+            freed_bytes,
+        } = report.detail
+        else {
+            panic!("prune detail")
+        };
+        assert_eq!(removed_orphaned, 1);
+        assert_eq!(removed_outdated, 1);
+        assert_eq!(kept_projects, 1);
+        assert!(freed_bytes > 0);
+        assert_eq!(cache_dir_count(&projects_root), 1);
+    }
+
+    #[test]
     fn cache_clear_all_removes_every_project_cache_under_the_injected_base() {
         let temp = tempdir().expect("fixture");
         let cache = temp.path().join("cache");
@@ -1961,7 +2725,7 @@ mod tests {
             execute(index, &context).expect("index");
         }
         let projects_root = cache.join("projects");
-        assert_eq!(fs::read_dir(&projects_root).expect("projects").count(), 2);
+        assert_eq!(cache_dir_count(&projects_root), 2);
 
         // `clear --all` never selects a project, so a missing root is irrelevant.
         let missing = temp.path().join("no-project");
@@ -1982,7 +2746,7 @@ mod tests {
         assert_eq!(scope, crate::CacheClearScope::All);
         assert_eq!(removed_projects, 2);
         assert!(freed_bytes > 0);
-        assert_eq!(fs::read_dir(&projects_root).expect("projects").count(), 0);
+        assert_eq!(cache_dir_count(&projects_root), 0);
         assert!(projects_root.exists());
     }
 

@@ -654,13 +654,65 @@ pub enum CacheDetail {
         database_path: String,
         exists: bool,
         size_bytes: u64,
+        /// Space held by pages the database has freed but not returned. Large
+        /// values mean `cache compact` will shrink the file.
+        reclaimable_bytes: u64,
+        /// Layout version stamped in the database, when one is readable.
+        schema_version: Option<i64>,
         snapshots: Vec<CacheSnapshotOutput>,
+    },
+    StatusAll {
+        cache_dir: String,
+        projects: Vec<CacheProjectOutput>,
+        total_size_bytes: u64,
+        total_reclaimable_bytes: u64,
     },
     Clear {
         scope: CacheClearScope,
         removed_projects: u64,
         freed_bytes: u64,
     },
+    Prune {
+        removed_orphaned: u64,
+        removed_outdated: u64,
+        kept_projects: u64,
+        freed_bytes: u64,
+    },
+    Compact {
+        compacted_projects: u64,
+        freed_bytes: u64,
+    },
+    Rebuild {
+        discarded_bytes: u64,
+        indexed_files: u64,
+        size_bytes: u64,
+    },
+}
+
+/// One project's cache health in `cache status --all` output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheProjectOutput {
+    /// Project root the cache was built for, as recorded in the database.
+    pub root: Option<String>,
+    pub cache_dir: String,
+    pub size_bytes: u64,
+    pub reclaimable_bytes: u64,
+    pub schema_version: Option<i64>,
+    pub state: CacheProjectState,
+}
+
+/// Whether a cached project can still serve a query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheProjectState {
+    /// Usable by this binary.
+    Current,
+    /// Written by an older layout; the next command rebuilds it.
+    Outdated,
+    /// Written by a newer binary; left alone.
+    Newer,
+    /// Project root is gone, or the database is unreadable.
+    Orphaned,
 }
 
 /// One persisted snapshot's cache footprint in `cache status` output.

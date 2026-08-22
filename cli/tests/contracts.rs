@@ -194,7 +194,7 @@ fn lossless_ids_survive_selector_and_output_json() {
 #[test]
 fn binary_imports_missing_snapshot_file_is_a_no_match() {
     let project = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .args([
             "--root",
             project.path().to_str().unwrap(),
@@ -219,7 +219,7 @@ fn binary_imports_missing_snapshot_file_is_a_no_match() {
 #[test]
 fn binary_help_and_version_are_successful_stdout_display_only() {
     for flag in ["--help", "--version"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+        let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
             .arg(flag)
             .output()
             .unwrap();
@@ -231,7 +231,7 @@ fn binary_help_and_version_are_successful_stdout_display_only() {
 
 #[test]
 fn binary_usage_errors_map_to_two_and_emit_json_when_requested() {
-    let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .args(["def", "--json"])
         .output()
         .unwrap();
@@ -255,7 +255,7 @@ fn binary_symbols_and_def_query_a_real_no_cache_project_losslessly() {
     .unwrap();
     std::fs::write(project.path().join("beta.rs"), "pub fn beta_helper() {}\n").unwrap();
 
-    let symbols = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let symbols = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["symbols", "HELPER", "--no-cache", "--json", "--limit", "1"])
         .output()
@@ -276,7 +276,7 @@ fn binary_symbols_and_def_query_a_real_no_cache_project_losslessly() {
         symbols["results"][0]["idDisplay"].as_str().unwrap()
     );
 
-    let filtered = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let filtered = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args([
             "symbols",
@@ -296,7 +296,7 @@ fn binary_symbols_and_def_query_a_real_no_cache_project_losslessly() {
     assert_eq!(filtered["total"], 1);
     assert_eq!(filtered["results"][0]["name"], "beta_helper");
 
-    let definition = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let definition = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args([
             "def",
@@ -330,7 +330,7 @@ fn binary_query_no_match_has_typed_json_human_output_and_exit_code() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("lib.rs"), "pub fn present() {}\n").unwrap();
 
-    let json = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let json = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["symbols", "missing", "--no-cache", "--json"])
         .output()
@@ -346,7 +346,7 @@ fn binary_query_no_match_has_typed_json_human_output_and_exit_code() {
             .contains("no matching result")
     );
 
-    let human = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let human = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["def", "missing", "--no-cache"])
         .output()
@@ -375,7 +375,7 @@ fn binary_relations_and_impact_cover_filters_limits_coordinates_and_no_match() {
     .unwrap();
 
     let json = |args: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+        let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
             .current_dir(project.path())
             .args(args)
             .args(["--no-cache", "--json"])
@@ -453,7 +453,7 @@ fn binary_relations_and_impact_cover_filters_limits_coordinates_and_no_match() {
             .all(|row| row["seed"] == impact["selector"]["ids"][0])
     );
 
-    let human = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let human = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["callers", "target", "--no-cache", "--limit", "1"])
         .output()
@@ -472,7 +472,7 @@ fn binary_relations_and_impact_cover_filters_limits_coordinates_and_no_match() {
     );
     assert!(human.contains("truncated: returned 1 of 2 results"));
 
-    let impact_human = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let impact_human = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args([
             "impact",
@@ -490,7 +490,7 @@ fn binary_relations_and_impact_cover_filters_limits_coordinates_and_no_match() {
     assert!(impact_human.contains("seed codegraph"));
     assert!(impact_human.contains("truncated: traversal bound omitted reachable results"));
 
-    let missing = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let missing = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["callers", "missing", "--no-cache", "--json"])
         .output()
@@ -516,7 +516,7 @@ fn binary_imports_references_and_module_deps_cover_resolved_raw_and_aggregate_co
     std::fs::write(project.path().join("src/dep.rs"), "pub fn helper() {}\n").unwrap();
 
     let run_json = |args: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+        let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
             .current_dir(project.path())
             .args(args)
             .args(["--no-cache", "--json"])
@@ -591,7 +591,7 @@ fn binary_imports_references_and_module_deps_cover_resolved_raw_and_aggregate_co
         &["references", "src/main.rs"][..],
         &["module-deps"][..],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+        let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
             .current_dir(project.path())
             .args(args)
             .args(["--no-cache"])
@@ -602,7 +602,7 @@ fn binary_imports_references_and_module_deps_cover_resolved_raw_and_aggregate_co
         assert!(output.stderr.is_empty(), "{args:?}");
     }
 
-    let no_match = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let no_match = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args([
             "references",
@@ -650,7 +650,7 @@ fn snapshot_tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
 fn binary_zero_deadline_has_deterministic_timeout_json_and_exit_code() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("a.rs"), "pub fn run() {}\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["status", "--timeout", "0ms", "--json"])
         .output()
@@ -677,7 +677,7 @@ fn binary_default_cache_does_not_create_or_modify_files_in_selected_project() {
     std::fs::write(project.path().join("a.rs"), "pub fn run() {}\n").unwrap();
     let before = snapshot_tree(project.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["status", "--json"])
         .output()
@@ -698,7 +698,7 @@ fn binary_index_uses_the_same_binary_worker_and_keeps_success_channels_clean() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("a.rs"), "pub fn run() {}\n").unwrap();
 
-    let json = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let json = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["index", "--no-cache", "--json"])
         .output()
@@ -711,7 +711,7 @@ fn binary_index_uses_the_same_binary_worker_and_keeps_success_channels_clean() {
     assert_eq!(value["results"]["inventory_file_count"], 1);
     assert_eq!(value["results"]["changed"], 1);
 
-    let human = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let human = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["index", "--no-cache"])
         .output()
@@ -728,7 +728,7 @@ fn assert_member_read_indexes_completely(path: &str, source: &str) {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join(path), source).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let output = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .current_dir(project.path())
         .args(["index", "--no-cache", "--json"])
         .output()
@@ -786,7 +786,7 @@ fn same_binary_hidden_worker_succeeds_before_clap_and_stays_out_of_help() {
     let mut frame = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
     frame.extend_from_slice(&payload);
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .arg(WORKER_SENTINEL)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -802,7 +802,7 @@ fn same_binary_hidden_worker_succeeds_before_clap_and_stays_out_of_help() {
     let response: WorkerResponse = zerompk::from_msgpack(&output.stdout[4..]).unwrap();
     assert!(validate_response(&response, &request).unwrap().is_ok());
 
-    let help = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let help = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .arg("--help")
         .output()
         .unwrap();
@@ -842,7 +842,7 @@ fn one_worker_process_services_many_requests_then_exits_cleanly_on_stdin_eof() {
         stream.extend_from_slice(&payload);
     }
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_code2graph"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_c2g"))
         .arg(WORKER_SENTINEL)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

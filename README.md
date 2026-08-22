@@ -87,7 +87,7 @@ Choose the surface that owns the work you need:
 | --------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------ |
 | Conversion primitive                    | [`code2graph`](https://crates.io/crates/code2graph)                              | `cargo add code2graph`               |
 | Optional in-memory query index          | [`code2graph-query`](https://crates.io/crates/code2graph-query)                  | `cargo add code2graph-query`         |
-| Project-query CLI (`code2graph` binary) | [`code2graph-cli`](https://crates.io/crates/code2graph-cli)                      | `cargo install code2graph-cli`       |
+| Project-query CLI (`c2g` binary)        | [`code2graph-cli`](https://crates.io/crates/code2graph-cli)                      | `cargo install code2graph-cli`       |
 | Python binding                          | [`code2graph-rs`](https://pypi.org/project/code2graph-rs/)                       | `pip install code2graph-rs`          |
 | Node / Bun binding                      | [`@nodedb-lab/code2graph`](https://www.npmjs.com/package/@nodedb-lab/code2graph) | `npm install @nodedb-lab/code2graph` |
 
@@ -105,28 +105,62 @@ let helpers = index.symbols_named("helper");
 The CLI is a consumer application, not part of the core or query crates. It builds a local, consumer-owned cache for project commands; use `--no-cache` when a cache should not be read or written.
 
 ```sh
-code2graph index .
-code2graph symbols helper
-code2graph callers helper
-code2graph impact helper --depth 3
+c2g index .
+c2g symbols helper
+c2g callers helper
+c2g impact helper --depth 3
 ```
 
 By default the CLI rejects an incomplete index. `--allow-partial` explicitly permits
 publishing and querying a partial source set; inspect the reported omissions before
 relying on its results.
 
-`cargo install code2graph-cli` builds the binary from source with Cargo. No prebuilt binary distribution is promised here.
+Driving the CLI from a coding agent: [`docs/agent-integration.md`](docs/agent-integration.md) carries a copy-pasteable rule block for `CLAUDE.md` / `AGENTS.md` and explains why a mechanical trigger is the only kind an agent reliably follows.
+
+`cargo install code2graph-cli` builds the binary from source with Cargo; the installed command is **`c2g`**. No prebuilt binary distribution is promised here.
 
 ### Managing the cache
 
 The CLI keeps a per-project SQLite cache under the OS cache directory (on Linux, `$XDG_CACHE_HOME/code2graph` or `~/.cache/code2graph`; the equivalent on macOS/Windows), keyed by an opaque hash of the project's canonical root. The cache is incremental and self-bounding: re-indexing reuses unchanged work, and superseded snapshots are garbage-collected on publish so the database does not grow without limit. The `cache` subcommand inspects and manages it — all commands accept `--json`.
 
 ```sh
-code2graph --root . cache path       # print this project's cache directory and database path
-code2graph --root . cache status     # + on-disk size and a per-snapshot tier/edge/symbol breakdown
-code2graph --root . cache clear      # delete this project's cache; reports bytes freed
-code2graph cache clear --all         # delete every project's cache (no --root needed)
+c2g --root . cache path       # print this project's cache directory and database path
+c2g --root . cache status     # + size, reclaimable space, schema version, per-snapshot breakdown
+c2g cache status --all        # every cached project: size, state, reclaimable (no --root needed)
+c2g --root . cache compact    # return fragmentation to the filesystem; reports bytes freed
+c2g cache compact --all       # compact every cached project (no --root needed)
+c2g --root . cache rebuild    # discard this project's cache and index it again
+c2g --root . cache clear      # delete this project's cache; reports bytes freed
+c2g cache clear --all         # delete every project's cache (no --root needed)
+c2g cache prune               # delete only unusable caches (no --root needed)
 ```
+
+`cache status` reports **reclaimable** bytes — space the database has freed but not yet returned to the filesystem. When it is large, `cache compact` rewrites the database and gives that space back. `cache status --all` labels every cached project `current`, `outdated` (older schema, rebuilt on next use), `newer` (written by a newer binary), or `orphaned` (project root gone).
+
+`cache rebuild` discards the database and indexes from source. Prefer `index --force` to re-extract while keeping the cache file; reach for `rebuild` when the cache file itself is the thing you want gone.
+
+**Automatic pruning.** `index` prunes the cache root at most once a week, so caches for deleted projects do not accumulate. When the interval has not elapsed the check is a single file read, and queries never do it at all. It removes only what `cache prune` removes — nothing that can still serve a query — and prints a line to stderr when it removes something. Set `CODE2GRAPH_AUTO_PRUNE=off` to disable it.
+
+If you would rather sweep on a schedule, run `c2g cache prune` from your own timer. On Linux with systemd:
+
+```ini
+# ~/.config/systemd/user/code2graph-prune.service
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/c2g cache prune
+
+# ~/.config/systemd/user/code2graph-prune.timer
+[Timer]
+OnCalendar=weekly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable with `systemctl --user enable --now code2graph-prune.timer`. With cron, `0 3 * * 0 c2g cache prune` is the equivalent; on macOS, a `launchd` `StartCalendarInterval` job running the same command. Add `c2g cache compact --all` alongside it to return fragmentation as well.
+
+`cache prune` removes the two kinds of cache that can never serve a query again: an **orphaned** one whose project root no longer exists (a deleted checkout, or a temporary directory), and an **outdated** one written by an older schema, which the next command on that project would discard and rebuild anyway. It keeps every current cache, and keeps any cache stamped newer than the running binary. It reports what it removed, what it kept, and the bytes freed.
 
 `cache clear` only ever removes directories under `<cache>/projects/`; it never touches your source tree. Deleting a project's cache simply forces a fresh index on the next command.
 

@@ -14,7 +14,7 @@ Requires Pi and Node.js 22+. The native dependency supports Linux x64/arm64 (gli
 
 ## Use
 
-Ask Pi to scan or search before broad text exploration. The extension provides:
+Ask Pi to scan or search whenever the question names a code identifier — a function, type, method, or module — rather than reaching for text search. The extension provides:
 
 - `code2graph_scan` — bounded source scan and graph summary.
 - `code2graph_symbol_search` — search definitions by name, signature, kind, or file.

@@ -317,12 +317,18 @@ fn render_cache(report: &crate::CacheReport) -> String {
             database_path,
             exists,
             size_bytes,
+            reclaimable_bytes,
+            schema_version,
             snapshots,
         } => {
             let mut output = format!(
-                "cache dir: {cache_dir}\ndatabase: {database_path}\nexists: {}\nsize: {}\nsnapshots:\n",
+                "cache dir: {cache_dir}\ndatabase: {database_path}\nexists: {}\nsize: {}\nreclaimable: {}\nschema: {}\nsnapshots:\n",
                 yes_no(*exists),
-                human_bytes(*size_bytes)
+                human_bytes(*size_bytes),
+                human_bytes(*reclaimable_bytes),
+                schema_version
+                    .map(|version| version.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned())
             );
             if snapshots.is_empty() {
                 output.push_str("  (none)\n");
@@ -349,6 +355,63 @@ fn render_cache(report: &crate::CacheReport) -> String {
                 crate::CacheClearScope::Project => "project",
                 crate::CacheClearScope::All => "all",
             },
+            human_bytes(*freed_bytes)
+        ),
+        crate::CacheDetail::StatusAll {
+            cache_dir,
+            projects,
+            total_size_bytes,
+            total_reclaimable_bytes,
+        } => {
+            let mut output = format!("cache dir: {cache_dir}\nprojects: {}\n", projects.len());
+            for project in projects {
+                output.push_str(&format!(
+                    "  {:>10}  {:<9} schema={:<7} reclaimable={:>10}  {}\n",
+                    human_bytes(project.size_bytes),
+                    match project.state {
+                        crate::CacheProjectState::Current => "current",
+                        crate::CacheProjectState::Outdated => "outdated",
+                        crate::CacheProjectState::Newer => "newer",
+                        crate::CacheProjectState::Orphaned => "orphaned",
+                    },
+                    project
+                        .schema_version
+                        .map(|version| version.to_string())
+                        .unwrap_or_else(|| "?".to_owned()),
+                    human_bytes(project.reclaimable_bytes),
+                    project.root.as_deref().unwrap_or("(root unreadable)")
+                ));
+            }
+            output.push_str(&format!(
+                "total: {}  reclaimable: {}\n",
+                human_bytes(*total_size_bytes),
+                human_bytes(*total_reclaimable_bytes)
+            ));
+            output
+        }
+        crate::CacheDetail::Compact {
+            compacted_projects,
+            freed_bytes,
+        } => format!(
+            "compacted {compacted_projects} project(s), freed {}\n",
+            human_bytes(*freed_bytes)
+        ),
+        crate::CacheDetail::Rebuild {
+            discarded_bytes,
+            indexed_files,
+            size_bytes,
+        } => format!(
+            "rebuilt cache: discarded {}, indexed {indexed_files} file(s), now {}\n",
+            human_bytes(*discarded_bytes),
+            human_bytes(*size_bytes)
+        ),
+        crate::CacheDetail::Prune {
+            removed_orphaned,
+            removed_outdated,
+            kept_projects,
+            freed_bytes,
+        } => format!(
+            "pruned cache: removed {removed_orphaned} orphaned, {removed_outdated} outdated, kept {kept_projects}, freed {}\n",
             human_bytes(*freed_bytes)
         ),
     }

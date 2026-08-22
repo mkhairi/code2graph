@@ -9,11 +9,13 @@ mod resolve;
 mod types;
 
 pub use plan::{PriorFileRecord, RefreshDecision, RefreshEntry, RefreshInputs, RefreshPlan};
+pub(crate) use prepare::apply_metadata_budgets;
 pub use prepare::{
     ExtractSession, ExtractionOutcome, FactsExtractor, PrepareCandidateInputs,
     PreparedRefreshCandidate, ProcessFactsExtractor, ProcessSession, WorkerSlot,
     prepare_refresh_candidate, prepare_refresh_candidate_with,
 };
+pub(crate) use publish::cache_omission;
 pub use publish::{PublishedRefresh, prepare_and_publish, prepare_and_publish_with};
 pub use resolve::{PriorScopeState, ResolveCandidateInputs, ResolvedCandidate, resolve_candidate};
 pub use types::{ExtractionError, MAX_REFRESH_ATTEMPTS};

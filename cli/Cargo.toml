@@ -14,8 +14,10 @@ keywords = ["code-graph", "static-analysis", "cli", "symbols"]
 categories = ["command-line-utilities", "development-tools"]
 readme.workspace = true
 
+# The installed command is `c2g`. The crate keeps the full `code2graph-cli`
+# name for discovery; the binary is short because it is typed constantly.
 [[bin]]
-name = "code2graph"
+name = "c2g"
 path = "src/main.rs"
 
 [dependencies]
