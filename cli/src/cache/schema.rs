@@ -19,7 +19,9 @@ pub(super) fn fail_next_create_for_test() {
     FAIL_NEXT_CREATE.with(|fail_next_create| fail_next_create.set(true));
 }
 
-pub(super) const SCHEMA_VERSION: i64 = 1;
+/// Layout version stamped into `user_version`. A cache below it is rebuilt on
+/// open; a cache above it belongs to a newer binary and is left alone.
+pub const SCHEMA_VERSION: i64 = 3;
 pub(super) const APPLICATION_ID: i64 = 0x4332_4731;
 pub(super) const APPLICATION_IDENTITY: &str = "code2graph-cache";
 
@@ -54,7 +56,7 @@ const TABLES: &[(&str, &str)] = &[
     ),
     (
         "graph_edges",
-        "CREATE TABLE graph_edges (snapshot_id INTEGER NOT NULL REFERENCES graph_snapshots(snapshot_id) ON DELETE CASCADE, ordinal INTEGER NOT NULL CHECK (ordinal >= 0), edge_key BLOB NOT NULL, from_id BLOB NOT NULL, to_id BLOB NOT NULL, role TEXT NOT NULL, confidence TEXT NOT NULL, confidence_rank INTEGER NOT NULL CHECK (confidence_rank BETWEEN 0 AND 3), provenance TEXT NOT NULL, occurrence_file TEXT NOT NULL, occurrence_byte INTEGER NOT NULL CHECK (occurrence_byte >= 0), edge BLOB NOT NULL CHECK (length(edge) <= 16777216), PRIMARY KEY (snapshot_id, ordinal), UNIQUE (snapshot_id, edge_key))",
+        "CREATE TABLE graph_edges (snapshot_id INTEGER NOT NULL REFERENCES graph_snapshots(snapshot_id) ON DELETE CASCADE, ordinal INTEGER NOT NULL CHECK (ordinal >= 0), edge_key BLOB NOT NULL CHECK (length(edge_key) = 32), from_ord INTEGER NOT NULL CHECK (from_ord >= 0), to_ord INTEGER NOT NULL CHECK (to_ord >= 0), role TEXT NOT NULL, confidence TEXT NOT NULL, confidence_rank INTEGER NOT NULL CHECK (confidence_rank BETWEEN 0 AND 3), provenance TEXT NOT NULL, occurrence_file TEXT NOT NULL, occurrence_byte INTEGER NOT NULL CHECK (occurrence_byte >= 0), occurrence_line INTEGER NOT NULL CHECK (occurrence_line >= 0), occurrence_col INTEGER NOT NULL CHECK (occurrence_col >= 0), PRIMARY KEY (snapshot_id, ordinal), UNIQUE (snapshot_id, edge_key))",
     ),
     (
         "graph_ids",
@@ -115,11 +117,11 @@ const INDEXES: &[(&str, &str)] = &[
     ),
     (
         "graph_edges_from_idx",
-        "CREATE INDEX graph_edges_from_idx ON graph_edges (snapshot_id, from_id, role, confidence, provenance, ordinal)",
+        "CREATE INDEX graph_edges_from_idx ON graph_edges (snapshot_id, from_ord, role, confidence, provenance, ordinal)",
     ),
     (
         "graph_edges_to_idx",
-        "CREATE INDEX graph_edges_to_idx ON graph_edges (snapshot_id, to_id, role, confidence, provenance, ordinal)",
+        "CREATE INDEX graph_edges_to_idx ON graph_edges (snapshot_id, to_ord, role, confidence, provenance, ordinal)",
     ),
 ];
 
@@ -154,6 +156,74 @@ pub(super) fn create_v1(
     connection
         .pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(|_| CacheError::Access)
+}
+
+/// Discards an older cache layout and recreates the current one.
+///
+/// The cache is derived state: everything in it can be rebuilt from source, so
+/// an older schema costs a re-index, never an error. Raising `SCHEMA_VERSION`
+/// would otherwise make every existing cache a hard failure for its owner.
+/// Newer-than-current databases are deliberately not touched here — a newer
+/// binary's cache must not be destroyed by an older one.
+pub(super) fn recreate_v1(
+    connection: &Connection,
+    root: &[u8],
+    project_key: &[u8; 32],
+) -> Result<(), CacheError> {
+    // `DROP TABLE` performs an implicit `DELETE FROM`, so dropping a parent
+    // table while its children still hold rows is a foreign-key violation. The
+    // whole layout is being replaced, so enforcement has nothing to protect
+    // here. `PRAGMA foreign_keys` is a no-op inside a transaction, so it has to
+    // be set before the write begins and restored after it ends.
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .map_err(|_| CacheError::Access)?;
+    let outcome = recreate_v1_inner(connection, root, project_key);
+    let restored = connection
+        .execute_batch("PRAGMA foreign_keys = ON")
+        .map_err(|_| CacheError::Access);
+    outcome.and(restored)
+}
+
+fn recreate_v1_inner(
+    connection: &Connection,
+    root: &[u8],
+    project_key: &[u8; 32],
+) -> Result<(), CacheError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|_| CacheError::Access)?;
+    let result = (|| -> Result<(), CacheError> {
+        let names: Vec<String> = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                )
+                .map_err(|_| CacheError::Access)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|_| CacheError::Access)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CacheError::Access)?
+        };
+        for name in names {
+            // Identifier comes from sqlite_master, and quoting keeps any
+            // unexpected name from parsing as syntax.
+            connection
+                .execute(&format!("DROP TABLE IF EXISTS \"{name}\""), [])
+                .map_err(|_| CacheError::Access)?;
+        }
+        create_v1(connection, root, project_key)
+    })();
+    match result {
+        Ok(()) => connection
+            .execute_batch("COMMIT")
+            .map_err(|_| CacheError::Access),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 /// Transactionally replaces only the exact unreleased monolithic-graph layout.

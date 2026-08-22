@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Versioned bounded JSON codecs for cache blobs.
+//! Versioned bounded, compressed JSON codecs for cache blobs.
+//!
+//! The logical wire format is JSON so the envelope stays inspectable and every
+//! structural limit below keeps applying to the decoded document. Cache blobs
+//! are then zstd-framed on disk: symbol identities repeat their full SCIP
+//! string in every symbol, reference, and edge, which compresses by roughly an
+//! order of magnitude. Both the pre-compression and post-decompression sizes
+//! are bounded, so a corrupt or hostile blob can never expand without limit.
 
 use std::io::{self, Write};
 
@@ -13,6 +20,14 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum accepted encoded cache blob size.
 pub const CACHE_BLOB_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Frame tag for a zstd-compressed cache blob. A blob that does not start with
+/// it is from an older layout and is rejected as incompatible rather than
+/// guessed at.
+const BLOB_FRAME_MAGIC: [u8; 4] = *b"c2gz";
+/// Compression level. Level 3 is zstd's default: it captures nearly all of the
+/// available ratio on this data while staying fast enough to run on every
+/// published file.
+const BLOB_COMPRESSION_LEVEL: i32 = 3;
 const CACHE_COLLECTION_MAX: usize = 1_000_000;
 const CACHE_STRING_MAX: usize = 1_048_576;
 const CACHE_OWNER_MAX_BYTES: usize = 4096;
@@ -157,10 +172,31 @@ fn encode<T: Serialize>(format: &str, schema: u32, payload: &T) -> Result<Vec<u8
         },
     );
     match result {
-        Ok(()) => Ok(writer.bytes),
+        Ok(()) => frame(&writer.bytes),
         Err(_) if writer.overflowed => Err(CacheError::Oversize),
         Err(_) => Err(CacheError::Malformed),
     }
+}
+
+/// Wraps encoded JSON in the compressed cache frame.
+fn frame(json: &[u8]) -> Result<Vec<u8>, CacheError> {
+    let compressed =
+        zstd::bulk::compress(json, BLOB_COMPRESSION_LEVEL).map_err(|_| CacheError::Malformed)?;
+    let mut framed = Vec::with_capacity(BLOB_FRAME_MAGIC.len() + compressed.len());
+    framed.extend_from_slice(&BLOB_FRAME_MAGIC);
+    framed.extend_from_slice(&compressed);
+    Ok(framed)
+}
+
+/// Recovers the encoded JSON from a compressed cache frame.
+///
+/// The decompressed size is capped at the same limit the encoder enforces, so a
+/// corrupt blob claiming a huge expansion fails instead of allocating it.
+fn unframe(blob: &[u8]) -> Result<Vec<u8>, CacheError> {
+    let Some(compressed) = blob.strip_prefix(&BLOB_FRAME_MAGIC) else {
+        return Err(CacheError::Incompatible);
+    };
+    zstd::bulk::decompress(compressed, CACHE_BLOB_MAX_BYTES).map_err(|_| CacheError::Malformed)
 }
 
 struct BoundedWriter {
@@ -203,8 +239,9 @@ fn decode<T: for<'de> Deserialize<'de>>(
     if blob.len() > CACHE_BLOB_MAX_BYTES {
         return Err(CacheError::Oversize);
     }
+    let json = unframe(blob)?;
     let value: serde_json::Value =
-        serde_json::from_slice(blob).map_err(|_| CacheError::Malformed)?;
+        serde_json::from_slice(&json).map_err(|_| CacheError::Malformed)?;
     validate_json_limits(&value)?;
     let envelope: Envelope<T> = serde_json::from_value(value).map_err(|_| CacheError::Malformed)?;
     if envelope.format != format || envelope.schema != schema {
@@ -331,8 +368,16 @@ mod tests {
             Err(CacheError::Oversize)
         ));
         assert!(matches!(
-            decode_graph(b"not-json"),
+            decode_graph(&frame(b"not-json").expect("frame")),
             Err(CacheError::Malformed)
+        ));
+        // An unframed blob is from an older cache layout: reject it outright
+        // rather than trying to parse it as the current one.
+        assert!(matches!(
+            decode_graph(
+                br#"{"format":"code-graph","schema":1,"payload":{"symbols":[],"edges":[]}}"#
+            ),
+            Err(CacheError::Incompatible)
         ));
         let mut oversized = facts();
         oversized.file = "x".repeat(CACHE_BLOB_MAX_BYTES);
@@ -366,7 +411,7 @@ mod tests {
         let wrong_schema =
             br#"{"format":"code-graph","schema":4294967295,"payload":{"symbols":[],"edges":[]}}"#;
         assert!(matches!(
-            decode_graph(wrong_schema),
+            decode_graph(&frame(wrong_schema).expect("frame")),
             Err(CacheError::Incompatible)
         ));
 
@@ -377,7 +422,10 @@ mod tests {
             "payload": { "symbols": [], "edges": [], "extra": long_string }
         }))
         .expect("JSON");
-        assert!(matches!(decode_graph(&blob), Err(CacheError::Limits)));
+        assert!(matches!(
+            decode_graph(&frame(&blob).expect("frame")),
+            Err(CacheError::Limits)
+        ));
 
         let mut many = String::from("{\"format\":\"code-graph\",\"schema\":1,\"payload\":{");
         many.push_str("\"symbols\":[");
@@ -390,7 +438,7 @@ mod tests {
         many.push_str("],\"edges\":[]}}");
         assert!(many.len() < CACHE_BLOB_MAX_BYTES);
         assert!(matches!(
-            decode_graph(many.as_bytes()),
+            decode_graph(&frame(many.as_bytes()).expect("frame")),
             Err(CacheError::Limits)
         ));
     }

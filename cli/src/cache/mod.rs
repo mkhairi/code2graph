@@ -20,6 +20,7 @@ pub use fingerprint::{
     PackageFingerprint, ProjectInputDigest,
 };
 pub use location::{CacheLocation, ProjectKey};
+pub use schema::SCHEMA_VERSION;
 pub(crate) use store::CacheLoadFailure;
 pub use store::{CacheGraphRead, CacheStore, SnapshotSummary};
 #[cfg(test)]

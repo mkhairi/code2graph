@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use code2graph::{
     CodeGraph, Confidence, Edge, EdgeKey, FileFacts, FileFactsValidationContext, FileSubgraph,
-    IncrementalGraph, Language, Symbol, SymbolId,
+    IncrementalGraph, Language, Occurrence, Symbol, SymbolId,
 };
 use code2graph_query::{EdgeFilter, GraphPage, GraphRead};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -230,6 +230,14 @@ impl CacheStore {
                 }
                 configure_writable(&connection, deadline)?;
             }
+            // An older layout is rebuilt rather than rejected: the cache is
+            // derived state, so a schema change costs a re-index. A NEWER
+            // layout is still refused — an older binary must not destroy the
+            // cache a newer one is using.
+            version if version < SCHEMA_VERSION => {
+                schema::recreate_v1(&connection, &root, &key)?;
+                configure_writable(&connection, deadline)?;
+            }
             _ => return Err(CacheError::UnsupportedSchema),
         }
         Ok(Self {
@@ -314,7 +322,13 @@ impl CacheStore {
         })();
         match result {
             Ok(()) => match self.connection.execute_batch("COMMIT") {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    // Invalidation drops every candidate, so it frees more pages
+                    // than any other path. Return them instead of carrying a
+                    // whole discarded cache as free space forever.
+                    self.reclaim_free_pages();
+                    Ok(())
+                }
                 Err(error) => {
                     let mapped = map_sqlite_error(error, deadline);
                     let _ = self.connection.execute_batch("ROLLBACK");
@@ -498,7 +512,7 @@ impl CacheStore {
                         let mut stmt = self
                             .connection
                             .prepare(
-                                "INSERT INTO graph_edges (snapshot_id, ordinal, edge_key, from_id, to_id, role, confidence, confidence_rank, provenance, occurrence_file, occurrence_byte, edge) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                "INSERT INTO graph_edges (snapshot_id, ordinal, edge_key, from_ord, to_ord, role, confidence, confidence_rank, provenance, occurrence_file, occurrence_byte, occurrence_line, occurrence_col) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                             )
                             .map_err(|error| map_sqlite_error(error, deadline))?;
                         for (ordinal, row) in graph.edges.iter().enumerate() {
@@ -506,15 +520,16 @@ impl CacheStore {
                                 snapshot_id,
                                 i64::try_from(ordinal).map_err(|_| CacheError::Limits)?,
                                 row.edge_key,
-                                row.from_id,
-                                row.to_id,
+                                row.from_ord,
+                                row.to_ord,
                                 row.role,
                                 row.confidence,
                                 row.confidence_rank,
                                 row.provenance,
                                 row.occurrence_file,
                                 row.occurrence_byte,
-                                row.payload
+                                row.occurrence_line,
+                                row.occurrence_col
                             ])
                             .map_err(|error| map_sqlite_error(error, deadline))?;
                         }
@@ -559,7 +574,7 @@ impl CacheStore {
                 Ok(()) => {
                     // Best-effort return of GC-freed pages to the OS. A no-op on
                     // caches created before auto_vacuum=INCREMENTAL; never fails publish.
-                    let _ = self.connection.execute_batch("PRAGMA incremental_vacuum");
+                    self.reclaim_free_pages();
                     Ok(())
                 }
                 Err(error) => {
@@ -575,6 +590,26 @@ impl CacheStore {
         }
     }
 
+    /// Returns garbage-collected pages to the operating system.
+    ///
+    /// `PRAGMA incremental_vacuum` reclaims **one page per statement step**, so
+    /// a single `execute_batch` frees exactly one page and leaves the rest of
+    /// the freelist on disk — the cache file then grows without bound as slots
+    /// are republished. Stepping the statement to completion is what actually
+    /// empties the freelist.
+    ///
+    /// Best-effort: reclaiming space never fails a publication that already
+    /// committed, and it is a no-op on caches created before
+    /// `auto_vacuum=INCREMENTAL`.
+    fn reclaim_free_pages(&self) {
+        let _ = (|| -> Result<(), rusqlite::Error> {
+            let mut statement = self.connection.prepare("PRAGMA incremental_vacuum")?;
+            let mut rows = statement.query([])?;
+            while rows.next()?.is_some() {}
+            Ok(())
+        })();
+    }
+
     fn verify_existing_graph(
         &self,
         snapshot_id: i64,
@@ -583,10 +618,16 @@ impl CacheStore {
     ) -> Result<(), CacheError> {
         let stored_symbols =
             self.load_graph_payloads(snapshot_id, "graph_symbols", "symbol", deadline)?;
+        // Edges have no serialized copy to compare, so compare the identity the
+        // columns carry: `edge_key` is the lossless edge identity and
+        // `confidence` is the one attribute it deliberately excludes.
         let stored_edges =
-            self.load_graph_payloads(snapshot_id, "graph_edges", "edge", deadline)?;
+            self.load_graph_payloads(snapshot_id, "graph_edges", "edge_key", deadline)?;
+        let stored_confidence =
+            self.load_graph_text(snapshot_id, "graph_edges", "confidence", deadline)?;
         if stored_symbols.len() != graph.symbols.len()
             || stored_edges.len() != graph.edges.len()
+            || stored_confidence.len() != graph.edges.len()
             || stored_symbols
                 .iter()
                 .zip(&graph.symbols)
@@ -594,7 +635,11 @@ impl CacheStore {
             || stored_edges
                 .iter()
                 .zip(&graph.edges)
-                .any(|(stored, row)| *stored != row.payload)
+                .any(|(stored, row)| *stored != row.edge_key)
+            || stored_confidence
+                .iter()
+                .zip(&graph.edges)
+                .any(|(stored, row)| *stored != row.confidence)
         {
             return Err(CacheError::CandidateConflict);
         }
@@ -616,6 +661,26 @@ impl CacheStore {
             .map_err(|error| map_sqlite_error(error, deadline))?;
         statement
             .query_map([snapshot_id], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(|error| map_sqlite_error(error, deadline))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| map_sqlite_error(error, deadline))
+    }
+
+    fn load_graph_text(
+        &self,
+        snapshot_id: i64,
+        table: &str,
+        column: &str,
+        deadline: &Deadline,
+    ) -> Result<Vec<String>, CacheError> {
+        let sql =
+            format!("SELECT {column} FROM {table} WHERE snapshot_id = ?1 ORDER BY ordinal ASC");
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .map_err(|error| map_sqlite_error(error, deadline))?;
+        statement
+            .query_map([snapshot_id], |row| row.get::<_, String>(0))
             .map_err(|error| map_sqlite_error(error, deadline))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| map_sqlite_error(error, deadline))
@@ -644,17 +709,16 @@ impl CacheStore {
         let mut edges = Vec::new();
         let mut statement = self
             .connection
-            .prepare("SELECT edge FROM graph_edges WHERE snapshot_id = ?1 ORDER BY ordinal ASC")
+            .prepare(&format!(
+                "SELECT {EDGE_COLUMNS} FROM {EDGE_FROM} WHERE e.snapshot_id = ?1 ORDER BY e.ordinal ASC"
+            ))
             .map_err(|error| map_sqlite_error(error, deadline))?;
         let rows = statement
-            .query_map([snapshot_id], |row| row.get::<_, Vec<u8>>(0))
+            .query_map([snapshot_id], |row| Ok(edge_from_row(row)))
             .map_err(|error| map_sqlite_error(error, deadline))?;
         for row in rows {
             ensure_time(deadline)?;
-            edges.push(
-                serde_json::from_slice(&row.map_err(|error| map_sqlite_error(error, deadline))?)
-                    .map_err(|_| CacheError::Corrupt)?,
-            );
+            edges.push(row.map_err(|error| map_sqlite_error(error, deadline))??);
         }
         Ok(CodeGraph { symbols, edges })
     }
@@ -777,8 +841,13 @@ impl CacheStore {
             let compatibility = CompatibilityFingerprint::from_bytes(fixed_32(compatibility)?);
             let language_fingerprint = super::LanguageFeatureFingerprint::from_bytes(fixed_32(language)?);
             let package_fingerprint = super::PackageFingerprint::from_bytes(fixed_32(package)?);
+            // The stored id was derived from this build's recipe only if the
+            // recipe has not changed since. A bumped cache epoch, crate version,
+            // or schema version legitimately changes it, so a mismatch means the
+            // row belongs to a different build — not that it is damaged. Such a
+            // snapshot is simply not visible; callers then refresh normally.
             if compatibility != CompatibilityFingerprint::new(language_fingerprint, package_fingerprint) {
-                return Err(CacheError::Corrupt);
+                return Ok(None);
             }
             let omissions = self.load_omissions(candidate_id, deadline)?;
             Ok(Some(super::ActiveSnapshotMetadata {
@@ -1227,9 +1296,13 @@ impl CacheStore {
             super::LanguageFeatureFingerprint::from_bytes(fixed_32(row.language_fingerprint)?);
         let package_fingerprint =
             super::PackageFingerprint::from_bytes(fixed_32(row.package_fingerprint)?);
+        // As in `active_metadata`: a recipe change (cache epoch, crate version,
+        // schema version) makes a previously valid row underivable here. Report
+        // it as incompatible so the recoverable path invalidates and rebuilds
+        // instead of failing the command outright.
         if compatibility != CompatibilityFingerprint::new(language_fingerprint, package_fingerprint)
         {
-            return Err(CacheError::Corrupt);
+            return Err(CacheError::Incompatible);
         }
         let input_digest = ProjectInputDigest::from_bytes(fixed_32(row.input_digest)?);
         let completeness = CacheCompleteness::from_sql(row.completeness)?;
@@ -1434,19 +1507,68 @@ struct PreparedSymbolRow {
     payload: Vec<u8>,
 }
 
-/// One `graph_edges` row with every derived column precomputed from the
-/// structured `Edge`, plus the exact serialized payload persisted in `edge`.
+/// One `graph_edges` row. The columns carry every `Edge` field, so the row is
+/// the edge's only stored form — persisting a serialized copy alongside them
+/// duplicated the symbol identities, which dominate the cache on any real
+/// project.
+/// Fixed-width identity for an `EdgeKey`.
+///
+/// The key is only ever compared for equality — the `UNIQUE` constraint and the
+/// pagination cursor — so a digest serves both while keeping the serialized
+/// endpoints out of the row and out of its unique index.
+fn edge_key_digest(key: &EdgeKey) -> Result<Vec<u8>, CacheError> {
+    let encoded = serde_json::to_vec(key).map_err(|_| CacheError::Limits)?;
+    Ok(blake3::hash(&encoded).as_bytes().to_vec())
+}
+
+/// Columns that reconstruct an `Edge`, in the order [`edge_from_row`] reads them.
+const EDGE_COLUMNS: &str = "f.id, t.id, e.role, e.confidence, e.provenance, e.occurrence_file, e.occurrence_line, e.occurrence_col, e.occurrence_byte";
+
+/// `FROM` clause pairing each edge with its endpoint identities. `graph_ids` is
+/// keyed by `(snapshot_id, ordinal)`, so both joins are primary-key lookups.
+const EDGE_FROM: &str = "graph_edges e \
+     JOIN graph_ids f ON f.snapshot_id = e.snapshot_id AND f.ordinal = e.from_ord \
+     JOIN graph_ids t ON t.snapshot_id = e.snapshot_id AND t.ordinal = e.to_ord";
+
+/// Rebuilds an `Edge` from its stored columns.
+fn edge_from_row(row: &rusqlite::Row<'_>) -> Result<Edge, CacheError> {
+    let blob = |index: usize| -> Result<Vec<u8>, CacheError> {
+        row.get::<_, Vec<u8>>(index)
+            .map_err(|_| CacheError::Corrupt)
+    };
+    let text = |index: usize| -> Result<String, CacheError> {
+        row.get::<_, String>(index).map_err(|_| CacheError::Corrupt)
+    };
+    let integer = |index: usize| -> Result<i64, CacheError> {
+        row.get::<_, i64>(index).map_err(|_| CacheError::Corrupt)
+    };
+    Ok(Edge {
+        from: serde_json::from_slice(&blob(0)?).map_err(|_| CacheError::Corrupt)?,
+        to: serde_json::from_slice(&blob(1)?).map_err(|_| CacheError::Corrupt)?,
+        role: serde_json::from_str(&text(2)?).map_err(|_| CacheError::Corrupt)?,
+        confidence: serde_json::from_str(&text(3)?).map_err(|_| CacheError::Corrupt)?,
+        provenance: serde_json::from_str(&text(4)?).map_err(|_| CacheError::Corrupt)?,
+        occ: Occurrence {
+            file: text(5)?,
+            line: u32::try_from(integer(6)?).map_err(|_| CacheError::Corrupt)?,
+            col: u32::try_from(integer(7)?).map_err(|_| CacheError::Corrupt)?,
+            byte: usize::try_from(integer(8)?).map_err(|_| CacheError::Corrupt)?,
+        },
+    })
+}
+
 struct PreparedEdgeRow {
     edge_key: Vec<u8>,
-    from_id: Vec<u8>,
-    to_id: Vec<u8>,
+    from_ord: i64,
+    to_ord: i64,
     role: String,
     confidence: String,
     confidence_rank: i64,
     provenance: String,
     occurrence_file: String,
     occurrence_byte: i64,
-    payload: Vec<u8>,
+    occurrence_line: i64,
+    occurrence_col: i64,
 }
 
 struct PreparedGraph {
@@ -1709,20 +1831,38 @@ impl PreparedCandidate {
                     payload,
                 })
             })?;
+            // `known_ids` is the sorted, deduped id set whose index IS the
+            // `graph_ids.ordinal` written below, so an endpoint resolves by
+            // binary search. Storing that ordinal instead of the serialized
+            // `SymbolId` keeps the identity out of every edge row and out of
+            // both endpoint indexes, which repeated it again.
+            let ordinals: std::collections::HashMap<&SymbolId, i64, rustc_hash::FxBuildHasher> =
+                known_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        Ok((*id, i64::try_from(index).map_err(|_| CacheError::Limits)?))
+                    })
+                    .collect::<Result<_, CacheError>>()?;
+            let ordinal_of = |id: &SymbolId| -> Result<i64, CacheError> {
+                ordinals
+                    .get(id)
+                    .copied()
+                    .ok_or(CacheError::InvalidCandidate)
+            };
             let edges = par_try_map(&ordered_edges, deadline, |edge| {
-                let payload = serde_json::to_vec(edge).map_err(|_| CacheError::Limits)?;
-                let from_id = serde_json::to_vec(&edge.from).map_err(|_| CacheError::Limits)?;
-                let to_id = serde_json::to_vec(&edge.to).map_err(|_| CacheError::Limits)?;
+                let from_ord = ordinal_of(&edge.from)?;
+                let to_ord = ordinal_of(&edge.to)?;
                 let role = serde_json::to_string(&edge.role).map_err(|_| CacheError::Limits)?;
                 let confidence =
                     serde_json::to_string(&edge.confidence).map_err(|_| CacheError::Limits)?;
                 let provenance =
                     serde_json::to_string(&edge.provenance).map_err(|_| CacheError::Limits)?;
-                let edge_key = serde_json::to_vec(&edge.key()).map_err(|_| CacheError::Limits)?;
+                let edge_key = edge_key_digest(&edge.key())?;
                 Ok(PreparedEdgeRow {
                     edge_key,
-                    from_id,
-                    to_id,
+                    from_ord,
+                    to_ord,
                     role,
                     confidence,
                     confidence_rank: confidence_rank(edge.confidence),
@@ -1730,7 +1870,8 @@ impl PreparedCandidate {
                     occurrence_file: edge.occ.file.clone(),
                     occurrence_byte: i64::try_from(edge.occ.byte)
                         .map_err(|_| CacheError::Limits)?,
-                    payload,
+                    occurrence_line: i64::from(edge.occ.line),
+                    occurrence_col: i64::from(edge.occ.col),
                 })
             })?;
             graphs.push(PreparedGraph {
@@ -2081,16 +2222,13 @@ impl CacheGraphRead<'_, '_> {
             .prepare(sql)
             .map_err(|error| map_sqlite_error(error, self.deadline))?;
         let rows = statement
-            .query_map(values, |row| row.get::<_, Vec<u8>>(0))
+            .query_map(values, |row| Ok(edge_from_row(row)))
             .map_err(|error| map_sqlite_error(error, self.deadline))?;
         let mut items = Vec::with_capacity(limit);
         let mut extra = false;
         for row in rows {
             ensure_time(self.deadline)?;
-            let edge: Edge = serde_json::from_slice(
-                &row.map_err(|error| map_sqlite_error(error, self.deadline))?,
-            )
-            .map_err(|_| CacheError::Corrupt)?;
+            let edge: Edge = row.map_err(|error| map_sqlite_error(error, self.deadline))??;
             if items.len() == limit {
                 extra = true;
                 break;
@@ -2141,26 +2279,35 @@ impl CacheGraphRead<'_, '_> {
                 next: None,
             });
         }
-        let mut sql = String::from("SELECT edge FROM graph_edges WHERE snapshot_id = ?");
+        let mut sql = format!("SELECT {EDGE_COLUMNS} FROM {EDGE_FROM} WHERE e.snapshot_id = ?");
         let mut values = vec![Value::Integer(self.snapshot_id)];
         if let Some((column, id)) = endpoint {
-            sql.push_str(&format!(" AND {column} = ?"));
-            values.push(Value::Blob(id));
+            // An endpoint filter is now an ordinal comparison. An id this
+            // snapshot never recorded matches nothing, so the page is empty
+            // rather than a scan that cannot hit.
+            let Some(ordinal) = self.id_ordinal(&id)? else {
+                return Ok(GraphPage {
+                    items: Vec::new(),
+                    next: None,
+                });
+            };
+            sql.push_str(&format!(" AND e.{column} = ?"));
+            values.push(Value::Integer(ordinal));
         }
         if let Some(file) = file {
-            sql.push_str(" AND occurrence_file = ?");
+            sql.push_str(" AND e.occurrence_file = ?");
             values.push(Value::Text(file.to_owned()));
         }
         if let Some(role) = filter.role {
-            sql.push_str(" AND role = ?");
+            sql.push_str(" AND e.role = ?");
             values.push(Value::Text(
                 serde_json::to_string(&role).map_err(|_| CacheError::Limits)?,
             ));
         }
-        sql.push_str(" AND confidence_rank >= ?");
+        sql.push_str(" AND e.confidence_rank >= ?");
         values.push(Value::Integer(confidence_rank(filter.min_confidence)));
         if let Some(provenance) = filter.provenance {
-            sql.push_str(" AND provenance = ?");
+            sql.push_str(" AND e.provenance = ?");
             values.push(Value::Text(
                 serde_json::to_string(&provenance).map_err(|_| CacheError::Limits)?,
             ));
@@ -2169,10 +2316,10 @@ impl CacheGraphRead<'_, '_> {
             let ordinal = self
                 .edge_cursor_ordinal(after)?
                 .ok_or(CacheError::Corrupt)?;
-            sql.push_str(" AND ordinal > ?");
+            sql.push_str(" AND e.ordinal > ?");
             values.push(Value::Integer(ordinal));
         }
-        sql.push_str(" ORDER BY ordinal ASC LIMIT ?");
+        sql.push_str(" ORDER BY e.ordinal ASC LIMIT ?");
         values.push(Value::Integer(
             i64::try_from(limit.saturating_add(1)).map_err(|_| CacheError::Limits)?,
         ));
@@ -2195,9 +2342,23 @@ impl CacheGraphRead<'_, '_> {
             .map_err(|error| map_sqlite_error(error, self.deadline))
     }
 
+    /// Resolves a serialized `SymbolId` to its interned `graph_ids` ordinal.
+    fn id_ordinal(&self, id: &[u8]) -> Result<Option<i64>, CacheError> {
+        ensure_time(self.deadline)?;
+        self.store
+            .connection
+            .query_row(
+                "SELECT ordinal FROM graph_ids WHERE snapshot_id = ?1 AND id = ?2",
+                params![self.snapshot_id, id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_sqlite_error(error, self.deadline))
+    }
+
     fn edge_cursor_ordinal(&self, key: &EdgeKey) -> Result<Option<i64>, CacheError> {
         ensure_time(self.deadline)?;
-        let key = serde_json::to_vec(key).map_err(|_| CacheError::Limits)?;
+        let key = edge_key_digest(key)?;
         self.store
             .connection
             .query_row(
@@ -2404,7 +2565,7 @@ impl GraphRead for CacheGraphRead<'_, '_> {
         limit: usize,
     ) -> Result<GraphPage<Edge, EdgeKey>, Self::Error> {
         let id = serde_json::to_vec(id).map_err(|_| CacheError::Limits)?;
-        self.edge_page_with_scope(Some(("to_id", id)), None, filter, after, limit)
+        self.edge_page_with_scope(Some(("to_ord", id)), None, filter, after, limit)
     }
 
     fn outgoing(
@@ -2415,7 +2576,7 @@ impl GraphRead for CacheGraphRead<'_, '_> {
         limit: usize,
     ) -> Result<GraphPage<Edge, EdgeKey>, Self::Error> {
         let id = serde_json::to_vec(id).map_err(|_| CacheError::Limits)?;
-        self.edge_page_with_scope(Some(("from_id", id)), None, filter, after, limit)
+        self.edge_page_with_scope(Some(("from_ord", id)), None, filter, after, limit)
     }
 }
 
@@ -2548,6 +2709,109 @@ mod tests {
             read_only.invalidate_derived(&Deadline::new(None)),
             Err(CacheError::ReadOnly)
         ));
+    }
+
+    #[test]
+    fn an_older_schema_is_rebuilt_and_a_newer_one_is_refused() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("project");
+        fs::create_dir(&root).expect("project");
+        let cache_location = location(&root, temp.path());
+        let store =
+            CacheStore::open_writable(&cache_location, &root, &Deadline::new(None)).expect("open");
+        store
+            .publish_candidate(
+                &candidate(CacheCompleteness::Complete, ResolverCacheTier::Name),
+                &Deadline::new(None),
+            )
+            .expect("publish");
+        drop(store);
+
+        // An older layout is derived state: rebuild it instead of failing the
+        // command, which is what raising SCHEMA_VERSION must cost its owner.
+        let connection = Connection::open(&cache_location.database_path).expect("open raw");
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+            .expect("downgrade");
+        drop(connection);
+        let rebuilt = CacheStore::open_writable(&cache_location, &root, &Deadline::new(None))
+            .expect("rebuild");
+        assert!(
+            rebuilt
+                .active_metadata(
+                    ResolverCacheTier::Name,
+                    CacheCompleteness::Complete,
+                    &Deadline::new(None)
+                )
+                .expect("metadata")
+                .is_none()
+        );
+        drop(rebuilt);
+
+        // A newer layout belongs to a newer binary and must survive untouched.
+        let connection = Connection::open(&cache_location.database_path).expect("open raw");
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .expect("upgrade");
+        drop(connection);
+        assert!(matches!(
+            CacheStore::open_writable(&cache_location, &root, &Deadline::new(None)),
+            Err(CacheError::UnsupportedSchema)
+        ));
+    }
+
+    #[test]
+    fn deleted_pages_are_returned_instead_of_growing_the_cache_file() {
+        use code2graph::{Confidence, Descriptor, Edge, Occurrence, Provenance, RefRole, SymbolId};
+
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("project");
+        fs::create_dir(&root).expect("project");
+        let cache_location = location(&root, temp.path());
+        let store =
+            CacheStore::open_writable(&cache_location, &root, &Deadline::new(None)).expect("open");
+        let mut snapshot = candidate(CacheCompleteness::Complete, ResolverCacheTier::Name);
+        let payload = "x".repeat(1_024);
+        snapshot.tier_graphs[0].1.edges = (0..2_000)
+            .map(|ordinal| Edge {
+                from: SymbolId::global(
+                    "rust",
+                    vec![Descriptor::Term(format!("from-{ordinal}-{payload}"))],
+                ),
+                to: SymbolId::global(
+                    "rust",
+                    vec![Descriptor::Term(format!("to-{ordinal}-{payload}"))],
+                ),
+                role: RefRole::Call,
+                confidence: Confidence::Scoped,
+                provenance: Provenance::ScopeGraph,
+                occ: Occurrence {
+                    file: "src/a.rs".into(),
+                    line: 1,
+                    col: 0,
+                    byte: ordinal,
+                },
+            })
+            .collect();
+        store
+            .publish_candidate(&snapshot, &Deadline::new(None))
+            .expect("publish");
+
+        let freelist = |store: &CacheStore| -> i64 {
+            store
+                .connection
+                .pragma_query_value(None, "freelist_count", |row| row.get(0))
+                .expect("freelist")
+        };
+
+        // Dropping every candidate frees the whole graph. A single
+        // `PRAGMA incremental_vacuum` step would return exactly one page and
+        // leave the rest on disk, so the cache file would keep its high-water
+        // mark forever and grow again on the next publish.
+        store
+            .invalidate_derived(&Deadline::new(None))
+            .expect("invalidate");
+        assert_eq!(freelist(&store), 0);
     }
 
     #[test]
